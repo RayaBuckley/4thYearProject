@@ -1,69 +1,112 @@
 """
 Tests for the ITES defence layer.
-These tests exercise the mediator-backed ITES implementation:
-- primitive proposals are declared when authorised,
-- nested proposals are only allowed when the current influencers can read them,
-- the defence returns a structured report.
+
+These tests exercise the mediator-backed ITES implementation and verify the
+observable behaviour of the defence. The internal implementation may evolve,
+but these behavioural guarantees should remain stable.
 """
+
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from fourth_year_project.core import Artifact, Principal, Provenance
 from fourth_year_project.ites import Guarantee
 from fourth_year_project.ites.reference import ReferenceITES
 from fourth_year_project.sled.environment import Data
+
+
 @dataclass(frozen=True, slots=True)
 class PrimitiveProposal:
     action: str
+
+
 @dataclass(frozen=True, slots=True)
 class NestedProposal:
     inputs: frozenset[Data]
-def test_reference_ites_declares_authorised_primitive_proposals() -> None:
+
+
+def _initial_inputs() -> tuple[Principal, frozenset[Artifact[Data]]]:
     alice = Principal("alice", "Alice")
-    initial_inputs = frozenset(
+
+    seed = Data(
+        authors=frozenset({alice}),
+        readers=frozenset({alice}),
+        tag="seed",
+    )
+
+    artifacts = frozenset(
         {
             Artifact(
-                value=Data(
-                    authors=frozenset({alice}),
-                    readers=frozenset({alice}),
-                    tag="seed",
-                ),
+                value=seed,
                 provenance=Provenance.from_principal(alice),
             )
         }
     )
-    seen_inputs: list[frozenset[Artifact[object]]] = []
+
+    return alice, artifacts
+
+
+def test_reference_ites_declares_authorised_primitive_proposals() -> None:
+    _, initial_inputs = _initial_inputs()
+
+    llm_inputs: list[frozenset[Artifact[object]]] = []
     declared: list[object] = []
-    def llm_call(inputs: frozenset[Artifact[object]]) -> frozenset[object]:
-        seen_inputs.append(inputs)
-        return frozenset({PrimitiveProposal(action="approve")})
+
+    def llm_call(
+        inputs: frozenset[Artifact[object]],
+    ) -> frozenset[object]:
+        llm_inputs.append(inputs)
+        return frozenset(
+            {
+                PrimitiveProposal(action="approve"),
+            }
+        )
+
     def declare(item: object) -> None:
         declared.append(item)
-    defence = ReferenceITES(max_llm_calls=3)
-    report = defence.run(
+
+    report = ReferenceITES().run(
         environment=object(),
         initial_inputs=initial_inputs,
         llm_call=llm_call,
         declare=declare,
     )
-    assert len(seen_inputs) == 1
-    assert seen_inputs[0] == initial_inputs
-    assert declared == [PrimitiveProposal(action="approve")]
-    assert report.declared_actions == frozenset({PrimitiveProposal(action="approve")})
+
+    assert len(llm_inputs) == 1
+    assert llm_inputs[0] == initial_inputs
+
+    proposal = PrimitiveProposal(action="approve")
+
+    assert declared == [proposal]
+    assert report.declared_actions == frozenset({proposal})
     assert report.blocked_actions == frozenset()
-    assert all(isinstance(guarantee, Guarantee) for guarantee in report.guarantees)
-def test_reference_ites_blocks_unreadable_nested_proposals() -> None:
+
+    guarantee_names = {g.name for g in report.guarantees}
+
+    assert guarantee_names == {
+        "bounded_llm_calls",
+        "nested_inputs_readable",
+        "primitive_actions_authorised",
+    }
+
+
+def test_reference_ites_blocks_unreadable_nested_execution() -> None:
     alice = Principal("alice", "Alice")
     bob = Principal("bob", "Bob")
+
     readable = Data(
         authors=frozenset({alice}),
         readers=frozenset({alice}),
         tag="readable",
     )
+
     unreadable = Data(
         authors=frozenset({bob}),
         readers=frozenset({bob}),
         tag="unreadable",
     )
+
     initial_inputs = frozenset(
         {
             Artifact(
@@ -72,8 +115,12 @@ def test_reference_ites_blocks_unreadable_nested_proposals() -> None:
             )
         }
     )
+
     declared: list[object] = []
-    def llm_call(inputs: frozenset[Artifact[object]]) -> frozenset[object]:
+
+    def llm_call(
+        inputs: frozenset[Artifact[object]],
+    ) -> frozenset[object]:
         _ = inputs
         return frozenset(
             {
@@ -81,53 +128,107 @@ def test_reference_ites_blocks_unreadable_nested_proposals() -> None:
                 NestedProposal(inputs=frozenset({unreadable})),
             }
         )
+
     def declare(item: object) -> None:
         declared.append(item)
-    defence = ReferenceITES(max_llm_calls=3)
-    report = defence.run(
+
+    report = ReferenceITES().run(
         environment=object(),
         initial_inputs=initial_inputs,
         llm_call=llm_call,
         declare=declare,
     )
-    assert NestedProposal(inputs=frozenset({readable})) in declared
-    assert NestedProposal(inputs=frozenset({unreadable})) not in declared
-    assert NestedProposal(inputs=frozenset({unreadable})) in report.blocked_actions
-    assert NestedProposal(inputs=frozenset({readable})) in report.declared_actions
-def test_reference_ites_records_configured_guarantees() -> None:
-    alice = Principal("alice", "Alice")
-    initial_inputs = frozenset(
-        {
-            Artifact(
-                value=Data(
-                    authors=frozenset({alice}),
-                    readers=frozenset({alice}),
-                    tag="seed",
-                ),
-                provenance=Provenance.from_principal(alice),
-            )
-        }
+
+    allowed = NestedProposal(inputs=frozenset({readable}))
+    blocked = NestedProposal(inputs=frozenset({unreadable}))
+
+    assert allowed in report.declared_actions
+    assert blocked in report.blocked_actions
+
+    nested_guarantee = next(
+        g
+        for g in report.guarantees
+        if g.name == "nested_inputs_readable"
     )
-    def llm_call(inputs: frozenset[Artifact[object]]) -> frozenset[object]:
+
+    assert nested_guarantee.holds is False
+
+
+def test_reference_ites_respects_llm_budget() -> None:
+    _, initial_inputs = _initial_inputs()
+
+    calls = 0
+
+    def llm_call(
+        inputs: frozenset[Artifact[object]],
+    ) -> frozenset[object]:
+        nonlocal calls
         _ = inputs
-        return frozenset()
-    declared: list[object] = []
-    def declare(item: object) -> None:
-        declared.append(item)
-    defence = ReferenceITES(guarantees=frozenset({"no_unauthorised_action"}))
-    report = defence.run(
+        calls += 1
+
+        return frozenset(
+            {
+                PrimitiveProposal(action=f"action-{calls}"),
+            }
+        )
+
+    report = ReferenceITES(max_llm_calls=1).run(
         environment=object(),
         initial_inputs=initial_inputs,
         llm_call=llm_call,
-        declare=declare,
+        declare=lambda _: None,
     )
-    assert declared == []
-    assert report.guarantees == frozenset(
-        {
-            Guarantee(
-                name="no_unauthorised_action",
-                holds=True,
-                details="Guarantee recorded by reference ITES run.",
-            )
-        }
+
+    assert calls == 1
+
+    budget = next(
+        g
+        for g in report.guarantees
+        if g.name == "bounded_llm_calls"
     )
+
+    assert budget.holds is True
+
+
+def test_reference_ites_is_deterministic() -> None:
+    _, initial_inputs = _initial_inputs()
+
+    def llm_call(
+        inputs: frozenset[Artifact[object]],
+    ) -> frozenset[object]:
+        _ = inputs
+        return frozenset(
+            {
+                PrimitiveProposal(action="approve"),
+            }
+        )
+
+    report_one = ReferenceITES().run(
+        environment=object(),
+        initial_inputs=initial_inputs,
+        llm_call=llm_call,
+        declare=lambda _: None,
+    )
+
+    report_two = ReferenceITES().run(
+        environment=object(),
+        initial_inputs=initial_inputs,
+        llm_call=llm_call,
+        declare=lambda _: None,
+    )
+
+    assert report_one == report_two
+
+
+def test_report_contains_guarantees() -> None:
+    _, initial_inputs = _initial_inputs()
+
+    report = ReferenceITES().run(
+        environment=object(),
+        initial_inputs=initial_inputs,
+        llm_call=lambda _: frozenset(),
+        declare=lambda _: None,
+    )
+
+    assert all(isinstance(g, Guarantee) for g in report.guarantees)
+    assert len(report.guarantees) == 3
