@@ -71,6 +71,8 @@ class ITES(ABC):
         initial input set and LLM model.
         """
         raise NotImplementedError
+from .mediator import MediatingITES
+from .reference import ReferenceITES
 __all__ = [
     "Declare",
     "EnvironmentLike",
@@ -78,5 +80,7 @@ __all__ = [
     "ITES",
     "ITESReport",
     "LLMCall",
+    "MediatingITES",
     "Proposal",
+    "ReferenceITES",
 ]
