@@ -1,47 +1,77 @@
 """
 Protected resources.
-A resource is any object over which the system may need to reason about access
-control. Resources have an owner by default, and ownership is the basis for the
-initial permission model.
-Examples include:
-- Files
-- Emails
-- Database records
-- API endpoints
-- Retrieved documents
-- External tool handles
+
+A Resource represents an object that may be acted upon by the agent.
+Unlike Artifacts, Resources are not pieces of information flowing through
+the LLM—they are the targets of primitive actions.
+
+Provider adapters (AWS, Google Cloud, Microsoft Entra, local filesystem,
+etc.) materialise concrete Resources from real systems.
 """
+
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional
-from .principals import Principal
+
+from dataclasses import dataclass, field
+from typing import Any, Mapping
+
+
 @dataclass(frozen=True, slots=True)
 class Resource:
     """
-    Represents a protected resource.
-    Attributes
-    ----------
-    id:
-        Globally unique identifier for the resource.
-    owner:
-        The principal that owns the resource by default.
-    resource_type:
-        A simple category label for the resource.
-    parent_id:
-        Optional identifier of a containing or inherited resource.
-        This supports hierarchical resource models later on.
+    Provider-backed protected object.
     """
+
     id: str
-    owner: Principal
-    resource_type: str = "generic"
-    parent_id: Optional[str] = None
-    def __str__(self) -> str:
-        return self.id
-    def __repr__(self) -> str:
+
+    provider: str
+    """
+    Stable provider identifier.
+
+    Examples:
+        aws
+        gcp
+        entra
+        filesystem
+        postgres
+        github
+    """
+
+    resource_type: str
+    """
+    Provider-specific resource kind.
+
+    Examples:
+        s3_bucket
+        iam_role
+        document
+        file
+        table
+    """
+
+    name: str
+
+    attributes: Mapping[str, Any] = field(default_factory=dict)
+
+    def with_attributes(self, **updates: Any) -> "Resource":
+        merged = dict(self.attributes)
+        merged.update(updates)
+
+        return Resource(
+            id=self.id,
+            provider=self.provider,
+            resource_type=self.resource_type,
+            name=self.name,
+            attributes=merged,
+        )
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """
+        Stable equivalence key used by representative-environment reduction.
+
+        Individual providers may refine this further.
+        """
         return (
-            f"Resource("
-            f"id={self.id!r}, "
-            f"owner={self.owner!r}, "
-            f"resource_type={self.resource_type!r}, "
-            f"parent_id={self.parent_id!r})"
+            self.provider,
+            self.resource_type,
         )
