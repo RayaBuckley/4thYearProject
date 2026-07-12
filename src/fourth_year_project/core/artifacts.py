@@ -1,61 +1,82 @@
-"""
-Information artefacts.
-An artefact represents any piece of information manipulated by the system.
-Unlike ordinary values, artefacts always carry provenance describing how they
-were produced.
-All computation within the system should consume and produce artefacts rather
-than raw values.
-"""
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Generic, TypeVar
+"""Provenance-bearing artifacts.
+
+An Artifact is a value plus the provenance needed to reason about influence,consent, and visibility.
+
+This is the core information-flow unit for the system:
+
+user messages become artifacts,
+
+tool outputs become artifacts,
+
+derived information becomes artifacts,
+
+nested execution consumes artifacts and produces new artifacts."""
+
+from future import annotations
+
+from dataclasses import dataclass, field, replacefrom typing import Any, Generic, TypeVar
+
 from .provenance import Provenance
+
 T = TypeVar("T")
-@dataclass(frozen=True, slots=True)
-class Artifact(Generic[T]):
-    """
-    A value together with its provenance.
-    Attributes
-    ----------
-    value:
-        The information represented by this artefact.
-    provenance:
-        The provenance associated with the value.
-    """
-    value: T
-    provenance: Provenance
-    def map(self, value: T, operation: str) -> "Artifact[T]":
-        """
-        Create a new artefact derived from this one.
-        The value is replaced while the provenance is preserved and extended
-        with the supplied operation.
-        """
-        return Artifact(
-            value=value,
-            provenance=self.provenance.with_operation(operation),
-        )
-    @staticmethod
-    def combine(
-        left: "Artifact[T]",
-        right: "Artifact[T]",
-        value: T,
-        operation: str,
-    ) -> "Artifact[T]":
-        """
-        Combine two artefacts into a new derived artefact.
-        Provenance is merged without loss before recording the new operation.
-        """
-        return Artifact(
-            value=value,
-            provenance=(
-                left.provenance
-                .merge(right.provenance)
-                .with_operation(operation)
-            ),
-        )
-    def __repr__(self) -> str:
-        return (
-            f"Artifact("
-            f"value={self.value!r}, "
-            f"provenance={self.provenance!r})"
-        )
+
+@dataclass(frozen=True, slots=True)class Artifact(Generic[T]):"""A provenance-bearing value.
+
+Attributes
+----------
+value:
+    The underlying payload.
+provenance:
+    Provenance metadata describing how the artifact was produced.
+label:
+    Optional human-readable label for debugging, tracing, or benchmarking.
+confidential:
+    Whether the artifact should be treated as confidential by default.
+"""
+
+value: T
+provenance: Provenance = field(default_factory=Provenance)
+label: str | None = None
+confidential: bool = False
+
+def __repr__(self) -> str:
+    return (
+        "Artifact("
+        f"value={self.value!r}, "
+        f"provenance={self.provenance!r}, "
+        f"label={self.label!r}, "
+        f"confidential={self.confidential!r})"
+    )
+
+def with_value(self, value: T) -> "Artifact[T]":
+    """Return a copy with a new value but the same provenance."""
+    return replace(self, value=value)
+
+def with_provenance(self, provenance: Provenance) -> "Artifact[T]":
+    """Return a copy with updated provenance."""
+    return replace(self, provenance=provenance)
+
+def with_label(self, label: str | None) -> "Artifact[T]":
+    """Return a copy with a new label."""
+    return replace(self, label=label)
+
+def mark_confidential(self) -> "Artifact[T]":
+    """Return a confidential copy of this artifact."""
+    return replace(self, confidential=True)
+
+def mark_public(self) -> "Artifact[T]":
+    """Return a non-confidential copy of this artifact."""
+    return replace(self, confidential=False)
+
+@property
+def is_confidential(self) -> bool:
+    """Convenience property for visibility checks."""
+    return self.confidential
+
+def wrap(value: T, *, label: str | None = None, confidential: bool = False) -> Artifact[T]:"""Wrap a raw value in a provenance-bearing artifact with empty provenance."""return Artifact(value=value, label=label, confidential=confidential)
+
+def unwrap(artifact: Artifact[T]) -> T:"""Extract the payload from an artifact."""return artifact.value
+
+def artifact_label(artifact: Artifact[Any]) -> str:"""Return a usable display label for the artifact."""if artifact.label is not None:return artifact.labelreturn type(artifact.value).name
+
+all = ["Artifact","artifact_label","unwrap","wrap",]
