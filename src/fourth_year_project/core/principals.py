@@ -1,25 +1,26 @@
-"""Security principals.
+"""
+Security principals.
 
 A principal represents an entity that can own resources, perform actions,
 and be granted permissions within the system.
 
-This version restores the old project’s semantics more closely by letting
-principals carry the permissions they are authorised to perform. That keeps
+Principals carry the permissions they are authorised to perform. That keeps
 the intersection-rule authorisation model possible without forcing policy
 logic into the provenance layer.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import FrozenSet
 
-from .permissions import Permission
+from .permissions import Permission, normalise_permission
 
 
 @dataclass(frozen=True, slots=True)
 class Principal:
-    """Represents a security principal.
+    """
+    Represents a security principal.
 
     Attributes
     ----------
@@ -38,6 +39,15 @@ class Principal:
     principal_type: str = "user"
     permissions: FrozenSet[Permission] = field(default_factory=frozenset)
 
+    def __post_init__(self) -> None:
+        if not self.id:
+            raise ValueError("Principal.id must be non-empty")
+        if not self.name:
+            raise ValueError("Principal.name must be non-empty")
+
+        normalised = frozenset(normalise_permission(permission) for permission in self.permissions)
+        object.__setattr__(self, "permissions", normalised)
+
     def __str__(self) -> str:
         return self.name
 
@@ -52,14 +62,28 @@ class Principal:
 
     def can_perform(self, permission: str | Permission) -> bool:
         """Return True when this principal has the requested permission."""
-        permission_name = permission.name if isinstance(permission, Permission) else permission
-        return any(p.name == permission_name for p in self.permissions)
+        permission_name = normalise_permission(permission)
+        return permission_name in self.permissions
 
     def with_permissions(self, permissions: FrozenSet[Permission]) -> "Principal":
         """Return a copy of this principal with a new permission set."""
-        return Principal(
-            id=self.id,
-            name=self.name,
-            principal_type=self.principal_type,
-            permissions=frozenset(permissions),
-        )
+        return replace(self, permissions=frozenset(permissions))
+
+    def add_permission(self, permission: str | Permission) -> "Principal":
+        """Return a copy with one additional permission."""
+        return replace(self, permissions=self.permissions | {normalise_permission(permission)})
+
+    def remove_permission(self, permission: str | Permission) -> "Principal":
+        """Return a copy with one permission removed."""
+        target = normalise_permission(permission)
+        return replace(self, permissions=frozenset(p for p in self.permissions if p != target))
+
+    @property
+    def permission_names(self) -> tuple[str, ...]:
+        """Return the principal's permissions as stable names."""
+        return tuple(sorted(permission.name for permission in self.permissions))
+
+
+def principal_has_permission(principal: Principal, permission: str | Permission) -> bool:
+    """Compatibility helper for permission checks."""
+    return principal.can_perform(permission)
