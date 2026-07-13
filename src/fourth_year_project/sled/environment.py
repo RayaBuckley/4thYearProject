@@ -14,22 +14,27 @@ the defence:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, FrozenSet, Iterable
+from dataclasses import dataclass, field, replace
+from typing import Any, FrozenSet, Iterable, Mapping
 
 from fourth_year_project.core import Artifact, Principal, Provenance
 from fourth_year_project.core.actions import (
-    Action,
+    ActionVisibility,
+    ClarificationRequestAction,
     DelegationAction,
     MessageUserAction,
     NestedExecutionAction,
     NoOpAction,
     PrimitiveAction,
-    Proposal,
+    Proposal as ActionProposal,
     RequestConsentAction,
     StopAction,
 )
 from fourth_year_project.core.permissions import Permission, normalise_permission
+
+# Backwards-compatible aliases for older imports.
+Proposal = ActionProposal
+LLMExecutionAction = NestedExecutionAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,11 +60,12 @@ class Data:
     readers: FrozenSet[Principal] = field(default_factory=frozenset)
     tag: str | None = None
     confidential: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "authors", frozenset(self.authors))
         object.__setattr__(self, "readers", frozenset(self.readers))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
     def provenance(self) -> Provenance:
         """
@@ -96,14 +102,23 @@ class Data:
         principal_set = frozenset(principals)
         return all(principal in self.readers for principal in principal_set)
 
+    def with_metadata(self, **updates: Any) -> "Data":
+        """
+        Return a copy with updated metadata.
+        """
+        merged = dict(self.metadata)
+        merged.update(updates)
+        return replace(self, metadata=merged)
+
     @property
-    def key(self) -> tuple[frozenset[str], frozenset[str]]:
+    def key(self) -> tuple[frozenset[str], frozenset[str], bool]:
         """
         Stable equivalence key used by representative-environment reduction.
         """
         return (
             frozenset(principal.id for principal in self.authors),
             frozenset(principal.id for principal in self.readers),
+            self.confidential,
         )
 
     @property
@@ -112,6 +127,16 @@ class Data:
         Human-readable label for the item.
         """
         return self.tag or "data"
+
+    def __repr__(self) -> str:
+        return (
+            "Data("
+            f"authors={tuple(sorted(principal.name for principal in self.authors))!r}, "
+            f"readers={tuple(sorted(principal.name for principal in self.readers))!r}, "
+            f"tag={self.tag!r}, "
+            f"confidential={self.confidential!r}, "
+            f"metadata={dict(self.metadata)!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,10 +150,11 @@ class Environment:
 
     data: FrozenSet[Data] = field(default_factory=frozenset)
     name: str = "environment"
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data", frozenset(self.data))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
     def total_principals(self) -> FrozenSet[Principal]:
@@ -206,13 +232,13 @@ class Environment:
         """
         return frozenset(item.to_artifact() for item in self.data)
 
-    def representative_groups(self) -> dict[tuple[frozenset[str], frozenset[str]], FrozenSet[Data]]:
+    def representative_groups(self) -> dict[tuple[frozenset[str], frozenset[str], bool], FrozenSet[Data]]:
         """
         Group data items by permission-structure equivalence.
 
         This is used by the exhaustive evaluator to compress the search space.
         """
-        groups: dict[tuple[frozenset[str], frozenset[str]], set[Data]] = {}
+        groups: dict[tuple[frozenset[str], frozenset[str], bool], set[Data]] = {}
         for item in self.data:
             groups.setdefault(item.key, set()).add(item)
         return {key: frozenset(items) for key, items in groups.items()}
@@ -280,7 +306,7 @@ def make_primitive_action(
     *,
     permission: str | Permission | None = None,
     resource: Any | None = None,
-    visibility: Any | None = None,
+    visibility: ActionVisibility | None = None,
 ) -> PrimitiveAction:
     """
     Create a primitive action suitable for benchmark scenarios.
@@ -303,7 +329,7 @@ def make_primitive_action(
 def make_nested_execution_action(
     inputs: Iterable[Data],
     *,
-    visibility: Any | None = None,
+    visibility: ActionVisibility | None = None,
 ) -> NestedExecutionAction:
     """
     Create a nested execution action from raw environment data.
@@ -322,7 +348,7 @@ def make_message_action(
     message: str,
     *,
     inputs: Iterable[Data] = (),
-    visibility: Any | None = None,
+    visibility: ActionVisibility | None = None,
 ) -> MessageUserAction:
     """
     Create a user-visible message action.
@@ -341,7 +367,7 @@ def make_request_consent_action(
     reason: str,
     *,
     inputs: Iterable[Data] = (),
-    visibility: Any | None = None,
+    visibility: ActionVisibility | None = None,
 ) -> RequestConsentAction:
     """
     Create a consent request action.
@@ -360,7 +386,7 @@ def make_stop_action(
     reason: str,
     *,
     inputs: Iterable[Data] = (),
-    visibility: Any | None = None,
+    visibility: ActionVisibility | None = None,
 ) -> StopAction:
     """
     Create a stop action.
@@ -379,7 +405,7 @@ def make_noop_action(
     label: str = "noop",
     *,
     inputs: Iterable[Data] = (),
-    visibility: Any | None = None,
+    visibility: ActionVisibility | None = None,
 ) -> NoOpAction:
     """
     Create a no-op action.
@@ -392,3 +418,20 @@ def make_noop_action(
     if visibility is not None:
         kwargs["visibility"] = visibility
     return NoOpAction(**kwargs)
+
+
+__all__ = [
+    "Data",
+    "Environment",
+    "LLMExecutionAction",
+    "Proposal",
+    "authors_for",
+    "contains_all",
+    "make_message_action",
+    "make_nested_execution_action",
+    "make_noop_action",
+    "make_primitive_action",
+    "make_request_consent_action",
+    "make_stop_action",
+    "readers_for",
+]
