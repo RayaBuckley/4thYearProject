@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, FrozenSet, Tuple
 
-from fourth_year_project.core import Artifact, Principal
+from fourth_year_project.core import Artifact, Principal, Session
 from fourth_year_project.core.actions import Action
 from . import Guarantee
 
@@ -75,6 +75,13 @@ class ExecutionTrace:
         """
         return self.steps[-1] if self.steps else None
 
+    @property
+    def depth(self) -> int:
+        """
+        Return the number of recorded steps.
+        """
+        return len(self.steps)
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionState:
@@ -85,6 +92,8 @@ class ExecutionState:
     ----------
     environment:
         The evaluation environment supplied by SLED.
+    session:
+        The conversation/session context for visibility and consent.
     initial_inputs:
         Initial artifacts given to the defence.
     max_llm_calls:
@@ -104,6 +113,7 @@ class ExecutionState:
     """
 
     environment: Any
+    session: Session | None = None
     initial_inputs: FrozenSet[Artifact[Any]] = field(default_factory=frozenset)
     max_llm_calls: int = 3
     llm_calls_used: int = 0
@@ -113,6 +123,12 @@ class ExecutionState:
     guarantees: FrozenSet[Guarantee] = field(default_factory=frozenset)
     trace: ExecutionTrace = field(default_factory=ExecutionTrace)
 
+    def __post_init__(self) -> None:
+        if self.max_llm_calls < 1:
+            raise ValueError("max_llm_calls must be at least 1")
+        if self.llm_calls_used < 0:
+            raise ValueError("llm_calls_used must be non-negative")
+
     def with_initial_inputs(
         self,
         initial_inputs: FrozenSet[Artifact[Any]],
@@ -121,6 +137,12 @@ class ExecutionState:
         Return a copy of the state with a new initial input set.
         """
         return replace(self, initial_inputs=initial_inputs)
+
+    def with_session(self, session: Session | None) -> "ExecutionState":
+        """
+        Return a copy of the state with a new session context.
+        """
+        return replace(self, session=session)
 
     def with_influencers(
         self,
@@ -135,6 +157,8 @@ class ExecutionState:
         """
         Return a copy of the state with more LLM calls consumed.
         """
+        if count < 0:
+            raise ValueError("count must be non-negative")
         return replace(self, llm_calls_used=self.llm_calls_used + count)
 
     def record_declared(self, proposal: Action[Any]) -> "ExecutionState":
@@ -188,7 +212,7 @@ class ExecutionState:
         """
         Return the number of recorded steps.
         """
-        return len(self.trace.steps)
+        return self.trace.depth
 
     def has_declared(self, proposal: Action[Any]) -> bool:
         """
@@ -201,6 +225,12 @@ class ExecutionState:
         Return True if the action has already been blocked.
         """
         return proposal in self.blocked_actions
+
+    def with_trace(self, trace: ExecutionTrace) -> "ExecutionState":
+        """
+        Return a copy with a replaced trace.
+        """
+        return replace(self, trace=trace)
 
 
 __all__ = [
