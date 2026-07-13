@@ -1,28 +1,37 @@
 """
 ITES execution state.
+
 This module makes the semantics of an ITES run explicit.
-The mediator should eventually transform immutable state rather than mutating a
-collection of local variables. That makes the defence easier to test, easier to
-trace, and easier to connect to SLED benchmark reporting.
+
+The mediator should transform immutable state rather than mutating local
+variables. That makes the defence easier to test, easier to trace, and easier
+to connect to SLED benchmark reporting.
+
 The state objects here are intentionally generic and lightweight. They are not a
-full scheduler or planner; they simply capture what happened during a defence
-run.
+scheduler or planner; they simply capture what happened during a defence run.
 """
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field, replace
 from typing import Any, FrozenSet, Tuple
+
 from fourth_year_project.core import Artifact, Principal
+from fourth_year_project.core.actions import Action
 from . import Guarantee
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionStep:
     """
     A single step in an ITES run.
+
     Attributes
     ----------
     depth:
         Recursion depth or execution nesting level.
     inputs:
-        The artefacts seen at this step.
+        The artifacts seen at this step.
     proposals:
         The proposals returned by the LLM for this step.
     declared:
@@ -34,40 +43,50 @@ class ExecutionStep:
     note:
         Optional human-readable explanation.
     """
+
     depth: int
     inputs: FrozenSet[Artifact[Any]] = field(default_factory=frozenset)
-    proposals: FrozenSet[Any] = field(default_factory=frozenset)
-    declared: FrozenSet[Any] = field(default_factory=frozenset)
-    blocked: FrozenSet[Any] = field(default_factory=frozenset)
+    proposals: FrozenSet[Action[Any]] = field(default_factory=frozenset)
+    declared: FrozenSet[Action[Any]] = field(default_factory=frozenset)
+    blocked: FrozenSet[Action[Any]] = field(default_factory=frozenset)
     influencers: FrozenSet[Principal] = field(default_factory=frozenset)
     note: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionTrace:
     """
     Immutable execution trace.
+
     The trace is append-only. Each modification returns a new trace instance.
     """
+
     steps: Tuple[ExecutionStep, ...] = field(default_factory=tuple)
+
     def add_step(self, step: ExecutionStep) -> "ExecutionTrace":
         """
         Return a new trace with one additional step appended.
         """
         return ExecutionTrace(steps=self.steps + (step,))
+
     def last(self) -> ExecutionStep | None:
         """
         Return the most recent step, if any.
         """
         return self.steps[-1] if self.steps else None
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionState:
     """
     Immutable ITES state.
+
     Attributes
     ----------
     environment:
         The evaluation environment supplied by SLED.
     initial_inputs:
-        Initial artefacts given to the defence.
+        Initial artifacts given to the defence.
     max_llm_calls:
         Maximum number of LLM invocations permitted.
     llm_calls_used:
@@ -83,31 +102,42 @@ class ExecutionState:
     trace:
         Full execution trace.
     """
+
     environment: Any
     initial_inputs: FrozenSet[Artifact[Any]] = field(default_factory=frozenset)
     max_llm_calls: int = 3
     llm_calls_used: int = 0
     active_influencers: FrozenSet[Principal] = field(default_factory=frozenset)
-    declared_actions: FrozenSet[Any] = field(default_factory=frozenset)
-    blocked_actions: FrozenSet[Any] = field(default_factory=frozenset)
+    declared_actions: FrozenSet[Action[Any]] = field(default_factory=frozenset)
+    blocked_actions: FrozenSet[Action[Any]] = field(default_factory=frozenset)
     guarantees: FrozenSet[Guarantee] = field(default_factory=frozenset)
     trace: ExecutionTrace = field(default_factory=ExecutionTrace)
-    def with_initial_inputs(self, initial_inputs: FrozenSet[Artifact[Any]]) -> "ExecutionState":
+
+    def with_initial_inputs(
+        self,
+        initial_inputs: FrozenSet[Artifact[Any]],
+    ) -> "ExecutionState":
         """
         Return a copy of the state with a new initial input set.
         """
         return replace(self, initial_inputs=initial_inputs)
-    def with_influencers(self, influencers: FrozenSet[Principal]) -> "ExecutionState":
+
+    def with_influencers(
+        self,
+        influencers: FrozenSet[Principal],
+    ) -> "ExecutionState":
         """
         Return a copy of the state with updated active influencers.
         """
         return replace(self, active_influencers=influencers)
+
     def increment_llm_calls(self, count: int = 1) -> "ExecutionState":
         """
         Return a copy of the state with more LLM calls consumed.
         """
         return replace(self, llm_calls_used=self.llm_calls_used + count)
-    def record_declared(self, proposal: Any) -> "ExecutionState":
+
+    def record_declared(self, proposal: Action[Any]) -> "ExecutionState":
         """
         Return a copy of the state with one more declared action.
         """
@@ -115,7 +145,8 @@ class ExecutionState:
             self,
             declared_actions=self.declared_actions | frozenset({proposal}),
         )
-    def record_blocked(self, proposal: Any) -> "ExecutionState":
+
+    def record_blocked(self, proposal: Action[Any]) -> "ExecutionState":
         """
         Return a copy of the state with one more blocked action.
         """
@@ -123,6 +154,7 @@ class ExecutionState:
             self,
             blocked_actions=self.blocked_actions | frozenset({proposal}),
         )
+
     def add_guarantee(self, guarantee: Guarantee) -> "ExecutionState":
         """
         Return a copy of the state with one more guarantee.
@@ -131,13 +163,48 @@ class ExecutionState:
             self,
             guarantees=self.guarantees | frozenset({guarantee}),
         )
+
     def add_step(self, step: ExecutionStep) -> "ExecutionState":
         """
         Return a copy of the state with an appended execution step.
         """
         return replace(self, trace=self.trace.add_step(step))
+
     def can_call_llm(self) -> bool:
         """
         Check whether another LLM call is still permitted.
         """
         return self.llm_calls_used < self.max_llm_calls
+
+    @property
+    def current_influencers(self) -> FrozenSet[Principal]:
+        """
+        Compatibility alias for the current influencer set.
+        """
+        return self.active_influencers
+
+    @property
+    def trace_length(self) -> int:
+        """
+        Return the number of recorded steps.
+        """
+        return len(self.trace.steps)
+
+    def has_declared(self, proposal: Action[Any]) -> bool:
+        """
+        Return True if the action has already been declared.
+        """
+        return proposal in self.declared_actions
+
+    def has_blocked(self, proposal: Action[Any]) -> bool:
+        """
+        Return True if the action has already been blocked.
+        """
+        return proposal in self.blocked_actions
+
+
+__all__ = [
+    "ExecutionState",
+    "ExecutionStep",
+    "ExecutionTrace",
+]
