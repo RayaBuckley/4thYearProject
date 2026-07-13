@@ -23,6 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Callable, FrozenSet
 
+from fourth_year_project.auth.authorisation import AuthorisationDecision, authorise_action
 from fourth_year_project.core import Artifact, Principal, Provenance
 from fourth_year_project.core.actions import (
     Action,
@@ -38,9 +39,8 @@ from fourth_year_project.core.actions import (
     StopAction,
 )
 from fourth_year_project.core.chat_policy import ChatPolicy
-from fourth_year_project.core.consent import ConsentProfile, ConsentState
+from fourth_year_project.core.consent import ConsentProfile
 from fourth_year_project.core.permissions import Permission, normalise_permission
-from fourth_year_project.core.provenance import authors_for
 from fourth_year_project.core.session import Session
 from . import Declare, Guarantee, ITES, ITESReport, LLMCall
 from .state import ExecutionState, ExecutionStep
@@ -118,8 +118,16 @@ def _materialise_inputs(inputs: FrozenSet[Any]) -> FrozenSet[Artifact[Any]]:
     for item in inputs:
         if isinstance(item, Artifact):
             materialised.add(item)
-        else:
-            materialised.add(Artifact(value=item, provenance=_provenance_for_input(item)))
+            continue
+
+        materialised.add(
+            Artifact(
+                value=item,
+                provenance=_provenance_for_input(item),
+                label=getattr(item, "label", None),
+                confidential=bool(getattr(item, "confidential", False)),
+            )
+        )
     return frozenset(materialised)
 
 
@@ -141,7 +149,10 @@ def _session_from_environment(environment: Any, initial_inputs: FrozenSet[Artifa
 
     participants = _artifact_principals(initial_inputs)
     consent_profiles = frozenset(
-        ConsentProfile(principal=principal, allowed_permissions=frozenset(principal.permissions))
+        ConsentProfile(
+            principal=principal,
+            allowed_permissions=frozenset(principal.permissions),
+        )
         for principal in participants
     )
     return Session(
@@ -150,51 +161,6 @@ def _session_from_environment(environment: Any, initial_inputs: FrozenSet[Artifa
         chat_policy=ChatPolicy(participants=participants),
         consent_profiles=consent_profiles,
     )
-
-
-def _readers_for(item: Any) -> FrozenSet[Principal] | None:
-    """
-    Return the declared readers for a raw input item if present.
-
-    If the item does not expose a readers set, this returns None so the caller
-    can fail closed.
-    """
-    source = item.value if isinstance(item, Artifact) else item
-    readers = getattr(source, "readers", None)
-    if readers is None:
-        return None
-    return frozenset(readers)
-
-
-def _inputs_readable_by_principals(
-    inputs: Iterable[Any],
-    influencers: FrozenSet[Principal],
-) -> bool:
-    """
-    Exact readability check inherited from the prior prototype.
-
-    Every current influencer must be permitted to read every input.
-    """
-    for item in inputs:
-        readers = _readers_for(item)
-        if readers is None:
-            return False
-        if any(principal not in readers for principal in influencers):
-            return False
-    return True
-
-
-def _all_principals_authorised(
-    influencers: FrozenSet[Principal],
-    permission: Permission | str,
-) -> bool:
-    """
-    Exact intersection rule from the original prototype.
-
-    Every principal in the influencer set must have the permission.
-    """
-    perm = normalise_permission(permission)
-    return all(principal.can_perform(perm) for principal in influencers)
 
 
 def _bind_action_context(
@@ -209,10 +175,9 @@ def _bind_action_context(
     and that any missing input set is filled from the current call context.
     """
     if isinstance(action, PrimitiveAction):
-        bound_inputs = action.inputs or current_inputs
         return replace(
             action,
-            inputs=frozenset(bound_inputs),
+            inputs=action.inputs or current_inputs,
             decision_principals=influencers,
         )
 
@@ -352,12 +317,19 @@ class MediatingITES(ITES):
         initial_influencers = _artifact_principals(initial_inputs)
         state = ExecutionState(
             environment=environment,
+            session=session,
             initial_inputs=initial_inputs,
             max_llm_calls=self.max_llm_calls,
             active_influencers=initial_influencers,
         )
 
-        state, nested_inputs_readable, primitive_actions_authorised, visibility_allowed, consent_allowed = self._run_branch(
+        (
+            state,
+            nested_inputs_readable,
+            primitive_actions_authorised,
+            visibility_allowed,
+            consent_allowed,
+        ) = self._run_branch(
             session=session,
             state=state,
             inputs=initial_inputs,
@@ -365,6 +337,7 @@ class MediatingITES(ITES):
             llm_call=llm_call,
             declare=declare,
             depth=1,
+            environment=environment,
         )
 
         state = state.add_guarantee(
@@ -430,6 +403,7 @@ class MediatingITES(ITES):
         llm_call: LLMCall,
         declare: Declare,
         depth: int,
+        environment: Any,
     ) -> tuple[ExecutionState, bool, bool, bool, bool]:
         """
         Execute one branch of the defence.
@@ -464,70 +438,58 @@ class MediatingITES(ITES):
             proposal = _bind_action_context(proposal, inputs, influencers)
 
             if isinstance(proposal, PrimitiveAction):
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                permission = _primitive_permission_for(proposal)
-                if not _all_principals_authorised(influencers, permission):
+                if not self.primitive_authoriser(proposal.provider_operation, influencers):
                     primitive_actions_authorised = False
                     blocked_this_step.add(proposal)
                     state = state.record_blocked(proposal)
                     continue
 
-                if proposal.decision_principals and proposal.decision_principals != influencers:
-                    consent_allowed = False
+            if isinstance(proposal, NestedExecutionAction):
+                nested_inputs = frozenset(proposal.nested_inputs or proposal.inputs)
+                if not self.nested_authoriser(environment, influencers, nested_inputs):
+                    nested_inputs_readable = False
                     blocked_this_step.add(proposal)
                     state = state.record_blocked(proposal)
                     continue
 
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
+            decision: AuthorisationDecision = authorise_action(session, proposal)
+
+            if not decision.allowed:
+                blocked_this_step.add(proposal)
+                state = state.record_blocked(proposal)
+
+                if isinstance(proposal, PrimitiveAction):
+                    primitive_actions_authorised = False
+
+                if isinstance(proposal, NestedExecutionAction):
+                    nested_inputs_readable = False
+
+                if not decision.visibility_allowed:
+                    visibility_allowed = False
+
+                if decision.consent is not None and decision.consent.state != decision.consent.state.ALLOW:
+                    consent_allowed = False
+                elif decision.consent is None and not decision.visibility_allowed:
+                    consent_allowed = False
+
                 continue
 
+            declare(proposal)
+            declared_this_step.add(proposal)
+            state = state.record_declared(proposal)
+
             if isinstance(proposal, NestedExecutionAction):
-                if depth >= self.max_llm_calls:
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not self.nested_authoriser(session, influencers, frozenset(proposal.nested_inputs)):
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not _inputs_readable_by_principals(proposal.nested_inputs, influencers):
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if proposal.decision_principals and proposal.decision_principals != influencers:
-                    consent_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
-
-                nested_artifacts = _materialise_inputs(frozenset(proposal.nested_inputs))
+                nested_artifacts = _materialise_inputs(frozenset(proposal.nested_inputs or proposal.inputs))
                 next_influencers = influencers | _artifact_principals(nested_artifacts)
 
                 state = state.with_influencers(next_influencers)
-                state, child_nested_ok, child_primitive_ok, child_visibility_ok, child_consent_ok = self._run_branch(
+                (
+                    state,
+                    child_nested_ok,
+                    child_primitive_ok,
+                    child_visibility_ok,
+                    child_consent_ok,
+                ) = self._run_branch(
                     session=session,
                     state=state,
                     inputs=nested_artifacts,
@@ -535,118 +497,12 @@ class MediatingITES(ITES):
                     llm_call=llm_call,
                     declare=declare,
                     depth=depth + 1,
+                    environment=environment,
                 )
                 nested_inputs_readable = nested_inputs_readable and child_nested_ok
                 primitive_actions_authorised = primitive_actions_authorised and child_primitive_ok
                 visibility_allowed = visibility_allowed and child_visibility_ok
                 consent_allowed = consent_allowed and child_consent_ok
-                continue
-
-            if isinstance(proposal, MessageUserAction):
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not _inputs_readable_by_principals(proposal.inputs, influencers):
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if proposal.decision_principals and proposal.decision_principals != influencers:
-                    consent_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
-                continue
-
-            if isinstance(proposal, ClarificationRequestAction):
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not _inputs_readable_by_principals(proposal.inputs, influencers):
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
-                continue
-
-            if isinstance(proposal, RequestConsentAction):
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not _inputs_readable_by_principals(proposal.inputs, influencers):
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
-                continue
-
-            if isinstance(proposal, DelegationAction):
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if not _inputs_readable_by_principals(proposal.inputs, influencers):
-                    nested_inputs_readable = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                required_permissions = _delegation_permissions(proposal)
-                if any(not _all_principals_authorised(influencers, perm) for perm in required_permissions):
-                    primitive_actions_authorised = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                if proposal.decision_principals and proposal.decision_principals != influencers:
-                    consent_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
-                continue
-
-            if isinstance(proposal, (StopAction, NoOpAction)):
-                if not session.chat_policy.permits_visibility(proposal.visibility):
-                    visibility_allowed = False
-                    blocked_this_step.add(proposal)
-                    state = state.record_blocked(proposal)
-                    continue
-
-                declare(proposal)
-                declared_this_step.add(proposal)
-                state = state.record_declared(proposal)
-                continue
-
-            blocked_this_step.add(proposal)
-            state = state.record_blocked(proposal)
 
         state = state.add_step(
             ExecutionStep(
