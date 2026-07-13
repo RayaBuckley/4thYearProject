@@ -1,210 +1,390 @@
-4thYearProject
+# ITES: Influence Tracking Execution Security
 
-A reference implementation for a provenance-aware defence architecture for LLM-based systems and a framework for evaluating such defences.
+ITES is a provenance-aware defence architecture for agentic LLM systems. It enforces authorisation based on the principals that actually influenced an action, rather than relying solely on the identity of the requesting user or the permissions of the executing agent.
 
-This repository accompanies a fourth-year Computer Science dissertation investigating how provenance-aware execution can provide security guarantees against prompt injection and related influence attacks in agentic AI systems.
+The project has two major components:
 
-⸻
+- **ITES**, the defence architecture that mediates LLM execution.
+- **SLED** (Security, Logic and Evaluation Dataset), an exhaustive evaluation framework for reasoning about the security and utility of agentic systems.
 
-Overview
+The long-term goal is to evaluate realistic agentic systems against prompt injection and influence attacks while maintaining as much legitimate utility as possible.
 
-Large Language Model (LLM) systems increasingly perform actions on behalf of users by interacting with tools, APIs and external services. Existing systems typically execute actions using the authority of the application itself, making them vulnerable to prompt injection, indirect prompt injection and other influence attacks.
+---
 
-This project investigates an alternative execution model in which authority is derived from the provenance of information rather than the runtime context in which an action is executed.
+# Motivation
 
-The project consists of two major components:
+Modern LLM agents execute actions on behalf of users.
 
-* ITES — a provenance-aware defence architecture for LLM systems.
-* SLED — an evaluation framework for measuring the effectiveness of AI defences.
+Current systems generally authorise actions using one of:
 
-Together they provide both a novel defence and a reproducible method for evaluating that defence.
+- the permissions of the executing service,
+- the permissions of the requesting user,
+- heuristic prompt filtering.
 
-⸻
+These approaches fail to account for **who actually influenced the decision**.
 
-Research Contributions
+Prompt injection is fundamentally an influence attack.
 
-The project is centred around four research contributions.
+ITES models influence explicitly and derives authority from information provenance.
 
-1. ITES
+---
 
-Information-Tracked Execution System (ITES) is the primary contribution of this work.
+# Core idea
 
-ITES mediates every interaction between an LLM and the outside world by:
+Every piece of information has provenance.
 
-* tracking provenance throughout execution,
-* propagating influence through derived information,
-* authorising actions using provenance-derived authority,
-* preventing unauthorised actions caused by prompt injection or other influence attacks.
+When information influences an action:
 
-Rather than attempting to classify inputs as “trusted” or “untrusted”, ITES treats every source of information uniformly and derives authority from provenance.
+```
+information
+        │
+        ▼
+provenance
+        │
+        ▼
+current influencers
+        │
+        ▼
+intersection rule
+        │
+        ▼
+authorised action
+```
 
-⸻
+The defence maintains the set of current influencers throughout recursive LLM execution.
 
-2. SLED
+A primitive action is authorised only when **every current influencer is authorised** to perform that action.
 
-Security evaluation for LLM Execution Defences (SLED) is an evaluation framework for AI security defences.
+This preserves the security properties of the original prototype while allowing recursive execution.
 
-SLED provides:
+---
 
-* benchmark environments,
-* attack models,
-* evaluation scenarios,
-* metrics,
-* reporting.
+# Architecture
 
-Unlike existing benchmark suites, SLED is designed around system-level abstract attacks rather than attacks targeting specific model behaviours.
+The project is divided into several layers.
 
-This allows defences to be evaluated independently of any particular LLM implementation.
+```
+core
+│
+├── principals
+├── permissions
+├── resources
+├── provenance
+├── artifacts
+├── actions
+├── consent
+├── chat_policy
+└── session
 
-⸻
+↓
 
-3. Enterprise Policy Models
+execution
 
-The project models realistic organisational access control rather than relying on simplified permission systems.
+↓
 
-Planned policy models include:
+auth
 
-* AWS IAM
-* Google Cloud IAM
-* Microsoft Entra / Privileged Identity Management (PIM)
+↓
 
-These integrations are intended to demonstrate that ITES can operate within realistic enterprise security environments.
+ITES
 
-⸻
+↓
 
-4. Benchmark Integrations
+SLED
 
-SLED includes its own benchmark methodology while also supporting external benchmark suites.
+↓
 
-External benchmarks are used for comparison only.
+provider adapters
 
-Planned integrations include:
+↓
 
-* AgentDojo
-* Future public AI security benchmarks
+benchmarks
+```
 
-The AgentDojo integration executes ITES against the AgentDojo benchmark and reports the resulting performance and security metrics.
+---
 
-SLED’s native benchmark suite is independent of AgentDojo and is specifically designed around system-level evaluation.
+# Core model
 
-⸻
+The core package defines immutable domain objects.
 
-Architecture
+## Principals
 
-The repository is organised into several independent subsystems.
+Represent users, services, agents and other security principals.
 
-core/
-    Fundamental domain model
-policy/
-    Enterprise authorisation models
-auth/
-    Provenance-derived authorisation
-ites/
-    Provenance-aware defence
-sled/
-    Evaluation framework
-execution/
-    Shared execution abstractions
+Principals carry their authorised permissions.
 
-Each subsystem has a single responsibility and can evolve independently.
+---
 
-⸻
+## Resources
 
-Core Design Principles
+Protected objects that primitive actions operate on.
 
-The implementation is based on the following principles.
+Examples include
 
-Provenance-first execution
+- files
+- databases
+- cloud resources
+- APIs
 
-Every artefact carries provenance.
+---
 
-No information exists without provenance.
+## Artifacts
 
-⸻
+Artifacts are provenance-bearing pieces of information.
 
-Influence propagation
+Examples include
 
-Derived information inherits the influence of every contributing input.
+- user prompts
+- retrieved documents
+- tool outputs
+- generated summaries
 
-Influence is never discarded during execution.
+Artifacts are the fundamental information-flow objects of ITES.
 
-⸻
+---
 
-Authorisation from provenance
+## Provenance
 
-Authority is derived from provenance rather than runtime identity.
+Information provenance records
 
-Protected actions are authorised immediately before execution.
+- which principals contributed information,
+- source labels,
+- provenance tags.
 
-⸻
+Decision provenance is deliberately **not** stored here.
 
-Separation of concerns
+---
 
-The repository separates:
+## Actions
 
-* execution,
-* provenance,
-* policy,
-* authorisation,
-* evaluation.
+The defence reasons about actions rather than raw strings.
 
-This keeps the architecture modular and allows individual components to evolve independently.
+Current action taxonomy:
 
-⸻
+- PrimitiveAction
+- NestedExecutionAction
+- DelegationAction
+- MessageUserAction
+- ClarificationRequestAction
+- RequestConsentAction
+- StopAction
+- NoOpAction
 
-Evaluation Philosophy
+---
 
-The primary goal of SLED is to evaluate systems, not individual language models.
+# ITES
 
-Accordingly, SLED focuses on:
+ITES mediates every proposed action.
 
-* system-level abstract attacks,
-* information-flow attacks,
-* privilege escalation,
-* cross-user influence,
-* delegated authority,
-* indirect prompt injection.
+The mediator:
 
-Model-level attacks are included only as reference benchmarks to facilitate comparison with prior work and existing benchmark suites.
+- tracks provenance-derived influence,
+- propagates influence through recursive execution,
+- enforces the exact intersection rule,
+- applies visibility policy,
+- applies consent policy,
+- records an immutable execution trace.
 
-They are not the primary methodology for evaluating AI security.
+The defence intentionally contains no planner/executor split.
 
-⸻
+Nested execution is modelled directly.
 
-Repository Status
+---
 
-The project is currently under active development.
+# Authorisation
+
+ITES separates three independent concepts.
+
+## Authorisation
+
+Can the current influencers perform the action?
+
+Uses the exact intersection rule:
+
+> every current influencer must authorise the action.
+
+---
+
+## Visibility
+
+Can this action be observed?
+
+Conversation visibility is controlled independently of authorisation.
+
+Visibility policies include:
+
+- internal
+- user-visible
+- transcript-visible
+- audited
+- provider-visible
+
+---
+
+## Consent
+
+Consent is intentionally narrower than authorisation.
+
+Users may voluntarily expose only a subset of their permissions for automatic execution.
+
+Consent:
+
+- is attached to decision principals,
+- never broadens authority,
+- cannot be manufactured by involving unrelated users.
+
+---
+
+# Sessions
+
+A Session represents an execution context.
+
+It binds together:
+
+- participants,
+- conversation visibility,
+- consent profiles.
+
+Execution state is intentionally separate.
+
+---
+
+# SLED
+
+SLED is the evaluation framework.
+
+It models:
+
+- environment data,
+- authors,
+- readers,
+- recursive execution,
+- benchmark environments.
+
+The goal is exhaustive evaluation of security and utility.
+
+---
+
+# Planned evaluation
+
+The intended evaluator explores every reachable execution branch.
+
+```
+Environment
+
+↓
+
+Representative Environment
+
+↓
+
+Exhaustive Search
+
+↓
+
+Security / Utility Metrics
+```
+
+Planned optimisations include:
+
+- representative-environment reduction
+- branch memoisation
+- action canonicalisation
+- branch pruning
+- symbolic state compression
+
+---
+
+# Provider adapters
+
+The core defence is provider-independent.
+
+Real systems will be integrated using adapters.
+
+Planned adapters include:
+
+- Docker
+- Virtual Machines
+- Filesystems
+- Databases
+- AWS IAM
+- Google Cloud IAM
+- Microsoft Entra PIM
+
+These adapters will materialise realistic organisational environments without changing the defence.
+
+---
+
+# Benchmarks
+
+Planned benchmark integrations include:
+
+- native exhaustive SLED evaluation
+- AgentDojo
+- additional external agent benchmarks
+- comparisons across multiple frontier LLMs
+
+---
+
+# Current implementation status
 
 Implemented:
 
-* Core provenance model
-* Authorisation framework
-* Policy abstractions
-* ITES defence framework
-* SLED evaluation framework
-* Initial unit tests
+- immutable core model
+- provenance tracking
+- action taxonomy
+- consent model
+- conversation visibility
+- session model
+- intersection-rule authorisation
+- ITES mediation framework
+- execution trace
+- environment model
+
+Partially implemented:
+
+- exhaustive evaluator
+- representative environments
 
 Planned:
 
-* Complete ITES mediation algorithm
-* Native SLED benchmark suite
-* AWS IAM policy adapter
-* Google Cloud IAM adapter
-* Microsoft Entra adapter
-* AgentDojo benchmark adapter
-* Additional benchmark integrations
-* Comprehensive evaluation metrics
-* Benchmark reporting
-* Performance evaluation
+- benchmark runners
+- provider adapters
+- Docker / VM simulation
+- cloud policy adapters
+- benchmark reporting
+- organisational simulation
 
-⸻
+---
 
-Development Goals
+# Repository structure
 
-The long-term objective is to provide:
+```
+src/
+    fourth_year_project/
+        core/
+        execution/
+        auth/
+        ites/
+        sled/
 
-* a practical provenance-aware defence for agentic AI systems,
-* realistic enterprise policy integrations,
-* reproducible security evaluation,
-* compatibility with existing benchmark suites,
-* a platform for future research into secure LLM execution.
+tests/
+
+scripts/        (planned)
+
+benchmarks/     (planned)
+
+providers/      (planned)
+```
+
+---
+
+# Research direction
+
+The project aims to answer:
+
+> Can provenance-based authorisation provide practical protection against prompt injection while preserving legitimate utility?
+
+Unlike traditional prompt-injection defences, ITES reasons about **authority**, **influence**, **visibility**, and **consent** simultaneously.
+
+The long-term objective is to demonstrate these guarantees on realistic organisational environments and existing agent security benchmarks.
