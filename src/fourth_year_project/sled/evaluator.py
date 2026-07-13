@@ -2,8 +2,8 @@
 Exhaustive SLED evaluator.
 
 This module explores a bounded combinatorial search space over ITES proposal
-patterns. It can compress the environment into representative equivalence
-classes so that search depth increases by reducing redundant data items.
+patterns. It compresses the environment into representative equivalence
+classes so search depth increases by reducing redundant data items.
 
 The evaluator keeps the old exhaustive semantics:
 - nested execution is explored combinatorially,
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Iterable, Sequence, TypeVar
+from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 from fourth_year_project.core import Artifact, Principal
 from fourth_year_project.core.actions import (
@@ -144,9 +144,7 @@ def _proposal_signature(proposal: Proposal) -> tuple[Any, ...]:
         )
 
     if isinstance(proposal, NestedExecutionAction):
-        nested_sig = tuple(
-            sorted(_artifact_signature(artifact) for artifact in proposal.nested_inputs)
-        )
+        nested_sig = tuple(sorted(_artifact_signature(artifact) for artifact in proposal.nested_inputs))
         return (
             "nested",
             nested_sig,
@@ -171,9 +169,7 @@ def _proposal_signature(proposal: Proposal) -> tuple[Any, ...]:
         return ("clarify", proposal.prompt, proposal.visibility.value)
 
     if isinstance(proposal, RequestConsentAction):
-        resource_id = (
-            proposal.target_resource.id if proposal.target_resource is not None else None
-        )
+        resource_id = proposal.target_resource.id if proposal.target_resource is not None else None
         return (
             "consent",
             proposal.requested_permission.name,
@@ -306,10 +302,6 @@ def _build_primitive_atoms(primitive_actions: frozenset[str]) -> tuple[Primitive
 def _build_control_atoms() -> tuple[Proposal, ...]:
     """
     Create a small fixed control-action vocabulary.
-
-    These atoms are intentionally generic. They are useful for testing the
-    mediation of chat-visible and control-flow actions without tying the
-    evaluator to any specific benchmark text.
     """
     return (
         MessageUserAction(
@@ -344,29 +336,6 @@ class ExhaustiveEvaluator:
     """
     Exhaustively explore the branching behaviour of a defence across one
     environment.
-
-    Parameters
-    ----------
-    defence:
-        The ITES defence implementation to run.
-    primitive_actions:
-        The action vocabulary used to construct primitive proposal atoms.
-        In realistic integrations this should be supplied by the benchmark or
-        provider adapter.
-    max_llm_calls:
-        Maximum depth of the explored call tree.
-    option_width:
-        Maximum number of proposals in a non-terminal LLM response.
-    terminal_option_width:
-        Maximum number of proposals in the final LLM response.
-    use_representative_environment:
-        Whether to compress the environment before branching.
-    max_execution_input_size:
-        Optional cap on nested-input subset size. Leave as None to explore the
-        full powerset of representative data.
-    include_control_actions:
-        Whether to include generic control actions such as messages, consent
-        requests, delegation, stop, and no-op in the option space.
     """
 
     defence: ITES
@@ -393,9 +362,6 @@ class ExhaustiveEvaluator:
     ) -> ExhaustiveEvaluationResult:
         """
         Run an exhaustive search over the defence's execution tree.
-
-        The evaluator replays every decision path induced by the branching
-        oracle, using representative inputs when enabled.
         """
         representative_environment = compress_environment(environment)
 
