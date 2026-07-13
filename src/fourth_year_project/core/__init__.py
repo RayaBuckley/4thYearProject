@@ -1,4 +1,4 @@
-“””
+"""
 Core domain model.
 
 This package contains the fundamental immutable objects used throughout the
@@ -12,18 +12,83 @@ Modules:
 * permissions: Defines permission types.
 * provenance: Tracks the causal origins of information.
 * artifacts: Represents information together with its provenance.
-    “””
+* actions: Defines the shared action taxonomy.
+* consent: Defines consent state and profiles.
+* chat_policy: Defines conversation visibility policy.
+* session: Binds together participants, consent, and chat policy.
+"""
 
-from .principals import Principal
-from .resources import Resource
-from .permissions import Permission
-from .provenance import Provenance
+from .actions import (
+    Action,
+    ActionKind,
+    ActionVisibility,
+    ClarificationRequestAction,
+    DelegationAction,
+    MessageUserAction,
+    NestedExecutionAction,
+    NoOpAction,
+    PrimitiveAction,
+    Proposal,
+    RequestConsentAction,
+    StopAction,
+)
 from .artifacts import Artifact
+from .chat_policy import ChatConfidentiality, ChatPolicy
+from .consent import (
+    ConsentDecision,
+    ConsentGrant,
+    ConsentProfile,
+    ConsentState,
+    ConsentWitness,
+)
+from .permissions import (
+    DELEGATE,
+    DELETE,
+    Permission,
+    READ,
+    SHARE,
+    WRITE,
+    normalise_permission,
+    permission_names,
+)
+from .principals import Principal
+from .provenance import Provenance, authors_for, provenance_union
+from .resources import Resource
+from .session import Session
 
-all = [
-“Principal”,
-“Resource”,
-“Permission”,
-“Provenance”,
-“Artifact”,
+__all__ = [
+    "Action",
+    "ActionKind",
+    "ActionVisibility",
+    "Artifact",
+    "ChatConfidentiality",
+    "ChatPolicy",
+    "ClarificationRequestAction",
+    "ConsentDecision",
+    "ConsentGrant",
+    "ConsentProfile",
+    "ConsentState",
+    "ConsentWitness",
+    "DELEGATE",
+    "DELETE",
+    "DelegationAction",
+    "MessageUserAction",
+    "NestedExecutionAction",
+    "NoOpAction",
+    "Permission",
+    "PrimitiveAction",
+    "Principal",
+    "Proposal",
+    "Provenance",
+    "READ",
+    "Resource",
+    "RequestConsentAction",
+    "SHARE",
+    "Session",
+    "StopAction",
+    "WRITE",
+    "authors_for",
+    "normalise_permission",
+    "permission_names",
+    "provenance_union",
 ]
