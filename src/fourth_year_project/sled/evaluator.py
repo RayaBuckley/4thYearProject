@@ -1,17 +1,16 @@
 """
 Exhaustive SLED evaluator.
 
-This module replaces the lightweight replay harness with a bounded combinatorial
-search engine. The evaluator explores all proposal combinations up to the
-configured branching limits, while optionally compressing the environment into
-representative equivalence classes to increase achievable search depth.
+This module explores a bounded combinatorial search space over ITES proposal
+patterns. It can compress the environment into representative equivalence
+classes so that search depth increases by reducing redundant data items.
 
-The design keeps the old prototype's exhaustive semantics:
+The evaluator keeps the old exhaustive semantics:
 - nested execution is explored combinatorially,
-- primitive actions and nested LLM requests are both branch points,
+- primitive actions and nested LLM requests are branch points,
 - the evaluator records every branch that it traverses,
 - representative environments reduce redundant branching when several data
-  items share the same permission structure.
+  items share the same security-relevant structure.
 
 The evaluator does not alter the intersection rule itself; that is enforced by
 the authorisation layer.
@@ -19,15 +18,31 @@ the authorisation layer.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from itertools import chain, combinations
-from typing import Any, FrozenSet, Sequence
+from itertools import combinations
+from typing import Any, Callable, FrozenSet, Iterable, Sequence, TypeVar
 
-from fourth_year_project.core import Artifact, Principal, Provenance
-from fourth_year_project.ites import Guarantee, ITES, ITESReport
+from fourth_year_project.core import Artifact, Principal
+from fourth_year_project.core.actions import (
+    Action,
+    ActionVisibility,
+    ClarificationRequestAction,
+    DelegationAction,
+    MessageUserAction,
+    NestedExecutionAction,
+    NoOpAction,
+    PrimitiveAction,
+    Proposal,
+    RequestConsentAction,
+    StopAction,
+)
+from fourth_year_project.core.permissions import normalise_permission
+from fourth_year_project.ites import Declare, Guarantee, ITES, ITESReport, LLMCall
 
-from .environment import Data, Environment, LLMExecutionAction, PrimitiveAction, Proposal
+from .environment import Data, Environment
+
+
+T = TypeVar("T")
 
 
 LLMCall = Callable[[FrozenSet[Artifact[Any]]], FrozenSet[Proposal]]
@@ -37,14 +52,20 @@ Declare = Callable[[Any], None]
 @dataclass(frozen=True, slots=True)
 class RepresentativeClass:
     """
-    A group of environment items that share the same author/readers structure.
+    A group of environment items that share the same security-relevant
+    authorisation structure.
 
     Items in the same class are behaviourally similar for exhaustive search
     purposes, so one representative can stand in for the whole class.
     """
 
+    signature: tuple[frozenset[str], frozenset[str], bool]
     representative: Data
-    members: FrozenSet[Data] = frozenset()
+    members: FrozenSet[Data] = field(default_factory=frozenset)
+
+    @property
+    def size(self) -> int:
+        return len(self.members)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,14 +73,21 @@ class RepresentativeEnvironment:
     """A compressed environment built from equivalence classes of data."""
 
     environment: Environment
-    classes: FrozenSet[RepresentativeClass] = frozenset()
+    classes: FrozenSet[RepresentativeClass] = field(default_factory=frozenset)
+    projection: dict[Data, Data] = field(default_factory=dict)
 
     @property
     def compression_factor(self) -> float:
         original = sum(len(cls.members) for cls in self.classes)
-        if not original:
+        if original == 0:
             return 1.0
         return original / max(1, len(self.environment.data))
+
+    def project_inputs(self, inputs: Iterable[Data]) -> FrozenSet[Data]:
+        """
+        Project original inputs onto the representative environment.
+        """
+        return frozenset(self.projection.get(item, item) for item in inputs)
 
 
 @dataclass(slots=True)
@@ -70,57 +98,126 @@ class ExhaustiveEvaluationResult:
     branches_explored: int
     terminal_branches: int
     max_depth_reached: int
+    branch_option_count: int
+    terminal_option_count: int
+    used_representative_environment: bool
     llm_inputs: list[FrozenSet[Artifact[Any]]] = field(default_factory=list)
     declared: list[Any] = field(default_factory=list)
     representative_environment: RepresentativeEnvironment | None = None
 
 
-def _powerset(items: Sequence[Any], *, min_size: int = 0, max_size: int | None = None):
+def _powerset(
+    items: Sequence[T],
+    *,
+    min_size: int = 0,
+    max_size: int | None = None,
+) -> Iterable[tuple[T, ...]]:
     """Yield subsets of items in increasing size order."""
     n = len(items)
     if max_size is None:
         max_size = n
     upper = min(n, max_size)
     for r in range(min_size, upper + 1):
-        for combo in combinations(items, r):
-            yield combo
+        yield from combinations(items, r)
 
 
-def _provenance_for(item: Data) -> Provenance:
-    """Construct provenance for a raw SLED data item."""
-    provenance = Provenance()
-    for author in item.authors:
-        provenance = provenance.merge(Provenance.from_principal(author))
-    return provenance.with_operation("sled_environment_input")
-
-
-def _materialise_inputs(inputs: FrozenSet[Data]) -> FrozenSet[Artifact[Any]]:
-    """Convert raw SLED inputs into provenance-bearing artefacts."""
-    return frozenset(Artifact(value=item, provenance=_provenance_for(item)) for item in inputs)
-
-
-def _signature(item: Data) -> tuple[frozenset[str], frozenset[str]]:
-    """Return the permission-structure signature for a data item."""
+def _data_signature(item: Data) -> tuple[frozenset[str], frozenset[str], bool]:
+    """Return the security-relevant signature for a data item."""
     authors = frozenset(author.id for author in item.authors)
     readers = frozenset(reader.id for reader in item.readers)
-    return authors, readers
+    return authors, readers, item.confidential
+
+
+def _artifact_signature(artifact: Artifact[Any]) -> tuple[Any, ...]:
+    """Return a stable signature for an artifact."""
+    value = artifact.value
+    if isinstance(value, Data):
+        return ("data", _data_signature(value), artifact.label, artifact.confidential)
+    return ("artifact", repr(value), artifact.label, artifact.confidential)
+
+
+def _proposal_signature(proposal: Proposal) -> tuple[Any, ...]:
+    """Return a stable signature for a proposal."""
+    if isinstance(proposal, PrimitiveAction):
+        resource_id = getattr(proposal.resource, "id", None) if proposal.resource is not None else None
+        return (
+            "primitive",
+            proposal.provider_operation,
+            proposal.permission.name,
+            resource_id,
+            proposal.visibility.value,
+        )
+
+    if isinstance(proposal, NestedExecutionAction):
+        nested_sig = tuple(
+            sorted(_artifact_signature(artifact) for artifact in proposal.nested_inputs)
+        )
+        return (
+            "nested",
+            nested_sig,
+            proposal.max_depth_hint,
+            proposal.visibility.value,
+        )
+
+    if isinstance(proposal, DelegationAction):
+        delegate_id = proposal.delegate_to.id if proposal.delegate_to is not None else None
+        return (
+            "delegation",
+            delegate_id,
+            proposal.scope,
+            tuple(sorted(permission.name for permission in proposal.delegated_permissions)),
+            proposal.visibility.value,
+        )
+
+    if isinstance(proposal, MessageUserAction):
+        return ("message", proposal.message, proposal.visibility.value)
+
+    if isinstance(proposal, ClarificationRequestAction):
+        return ("clarify", proposal.prompt, proposal.visibility.value)
+
+    if isinstance(proposal, RequestConsentAction):
+        resource_id = (
+            proposal.target_resource.id if proposal.target_resource is not None else None
+        )
+        return (
+            "consent",
+            proposal.requested_permission.name,
+            resource_id,
+            proposal.reason,
+            proposal.visibility.value,
+        )
+
+    if isinstance(proposal, StopAction):
+        return ("stop", proposal.reason, proposal.visibility.value)
+
+    if isinstance(proposal, NoOpAction):
+        return ("noop", proposal.label, proposal.visibility.value)
+
+    return ("unknown", repr(proposal))
+
+
+def _materialise_inputs(inputs: Iterable[Data]) -> FrozenSet[Artifact[Any]]:
+    """Convert raw SLED inputs into provenance-bearing artifacts."""
+    return frozenset(item.to_artifact() for item in inputs)
 
 
 def compress_environment(environment: Environment) -> RepresentativeEnvironment:
     """
     Compress an environment into representative equivalence classes.
 
-    Items with identical author/readers signatures are grouped together.
-    This preserves the relevant security structure while reducing branching.
+    Items with identical authors/readers/confidentiality signatures are grouped
+    together. This preserves the relevant security structure while reducing
+    branching.
     """
-    groups: dict[tuple[frozenset[str], frozenset[str]], list[Data]] = {}
+    groups: dict[tuple[frozenset[str], frozenset[str], bool], list[Data]] = {}
     for item in environment.data:
-        groups.setdefault(_signature(item), []).append(item)
+        groups.setdefault(_data_signature(item), []).append(item)
 
     classes: list[RepresentativeClass] = []
     representatives: set[Data] = set()
+    projection: dict[Data, Data] = {}
 
-    for members in groups.values():
+    for signature, members in groups.items():
         representative = min(
             members,
             key=lambda d: (
@@ -131,20 +228,31 @@ def compress_environment(environment: Environment) -> RepresentativeEnvironment:
             ),
         )
         representatives.add(representative)
+        for member in members:
+            projection[member] = representative
         classes.append(
             RepresentativeClass(
+                signature=signature,
                 representative=representative,
                 members=frozenset(members),
             )
         )
 
     return RepresentativeEnvironment(
-        environment=Environment(data=frozenset(representatives)),
+        environment=Environment(
+            data=frozenset(representatives),
+            name=f"{environment.name}:representative",
+            metadata=dict(environment.metadata),
+        ),
         classes=frozenset(classes),
+        projection=projection,
     )
 
 
-def _llm_inputs_readable(inputs: FrozenSet[Data], influencers: FrozenSet[Principal]) -> bool:
+def _llm_inputs_readable(
+    inputs: FrozenSet[Data],
+    influencers: FrozenSet[Principal],
+) -> bool:
     """
     Exact nested-call readability rule from the previous prototype.
 
@@ -156,6 +264,81 @@ def _llm_inputs_readable(inputs: FrozenSet[Data], influencers: FrozenSet[Princip
             if principal not in item.readers:
                 return False
     return True
+
+
+def _build_option_space(
+    atoms: Sequence[Proposal],
+    *,
+    max_size: int,
+) -> tuple[FrozenSet[Proposal], ...]:
+    """
+    Build a deterministic, deduplicated option space from a sequence of atoms.
+    """
+    ordered_atoms = sorted(atoms, key=_proposal_signature)
+    seen: set[tuple[Any, ...]] = set()
+    options: list[FrozenSet[Proposal]] = []
+
+    for combo in _powerset(ordered_atoms, min_size=0, max_size=max_size):
+        option = frozenset(combo)
+        signature = tuple(sorted(_proposal_signature(item) for item in option))
+        if signature in seen:
+            continue
+        seen.add(signature)
+        options.append(option)
+
+    return tuple(options)
+
+
+def _build_primitive_atoms(primitive_actions: FrozenSet[str]) -> tuple[PrimitiveAction, ...]:
+    """
+    Create primitive action atoms from a set of provider operation names.
+    """
+    atoms: list[PrimitiveAction] = []
+    for name in sorted(primitive_actions):
+        atoms.append(
+            PrimitiveAction(
+                permission=normalise_permission(name),
+                provider_operation=name,
+                visibility=ActionVisibility.INTERNAL,
+            )
+        )
+    return tuple(atoms)
+
+
+def _build_control_atoms() -> tuple[Proposal, ...]:
+    """
+    Create a small fixed control-action vocabulary.
+
+    These atoms are intentionally generic. They are useful for testing the
+    mediation of chat-visible and control-flow actions without tying the
+    evaluator to any specific benchmark text.
+    """
+    return (
+        MessageUserAction(
+            message="message",
+            visibility=ActionVisibility.USER_VISIBLE,
+        ),
+        ClarificationRequestAction(
+            prompt="clarify",
+            visibility=ActionVisibility.USER_VISIBLE,
+        ),
+        RequestConsentAction(
+            reason="request_consent",
+            visibility=ActionVisibility.USER_VISIBLE,
+        ),
+        DelegationAction(
+            scope="delegate",
+            visibility=ActionVisibility.INTERNAL,
+        ),
+        StopAction(
+            reason="stop",
+            visibility=ActionVisibility.INTERNAL,
+        ),
+        NoOpAction(
+            label="noop",
+            visibility=ActionVisibility.INTERNAL,
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -177,12 +360,15 @@ class ExhaustiveEvaluator:
     option_width:
         Maximum number of proposals in a non-terminal LLM response.
     terminal_option_width:
-        Maximum number of primitive proposals in the final LLM response.
+        Maximum number of proposals in the final LLM response.
     use_representative_environment:
         Whether to compress the environment before branching.
     max_execution_input_size:
         Optional cap on nested-input subset size. Leave as None to explore the
         full powerset of representative data.
+    include_control_actions:
+        Whether to include generic control actions such as messages, consent
+        requests, delegation, stop, and no-op in the option space.
     """
 
     defence: ITES
@@ -192,6 +378,7 @@ class ExhaustiveEvaluator:
     terminal_option_width: int = 3
     use_representative_environment: bool = True
     max_execution_input_size: int | None = None
+    include_control_actions: bool = True
 
     def __post_init__(self) -> None:
         if self.max_llm_calls < 1:
@@ -201,30 +388,47 @@ class ExhaustiveEvaluator:
         if self.terminal_option_width < 0:
             raise ValueError("terminal_option_width must be non-negative")
 
-    def run(self, environment: Environment, initial_inputs: Iterable[Data]) -> ExhaustiveEvaluationResult:
+    def run(
+        self,
+        environment: Environment,
+        initial_inputs: Iterable[Data],
+    ) -> ExhaustiveEvaluationResult:
         """
         Run an exhaustive search over the defence's execution tree.
 
         The evaluator replays every decision path induced by the branching
         oracle, using representative inputs when enabled.
         """
-        rep = compress_environment(environment) if self.use_representative_environment else RepresentativeEnvironment(environment=environment)
+        representative_environment = compress_environment(environment)
+
+        if self.use_representative_environment:
+            search_environment = representative_environment.environment
+            projection = representative_environment.projection
+        else:
+            search_environment = environment
+            projection = {item: item for item in environment.data}
 
         selected_inputs = frozenset(initial_inputs)
         if not selected_inputs <= environment.data:
             missing = selected_inputs - environment.data
             raise ValueError(f"Initial inputs are not in the environment: {missing!r}")
 
+        selected_inputs = frozenset(projection.get(item, item) for item in selected_inputs)
+        if not selected_inputs <= search_environment.data:
+            missing = selected_inputs - search_environment.data
+            raise ValueError(f"Projected initial inputs are not in the evaluation environment: {missing!r}")
+
         llm_inputs: list[FrozenSet[Artifact[Any]]] = []
         declared: list[Any] = []
-        terminal_reports: list[ITESReport] = []
 
-        primitive_atoms = [PrimitiveAction(action=a) for a in sorted(self.primitive_actions)]
-        execution_sources = list(rep.environment.data)
+        primitive_atoms = _build_primitive_atoms(self.primitive_actions)
+        control_atoms = _build_control_atoms() if self.include_control_actions else ()
+
+        execution_sources = tuple(sorted(search_environment.data, key=_data_signature))
         if self.max_execution_input_size is None:
-            execution_subsets = list(_powerset(execution_sources, min_size=1))
+            execution_subsets = tuple(_powerset(execution_sources, min_size=1))
         else:
-            execution_subsets = list(
+            execution_subsets = tuple(
                 _powerset(
                     execution_sources,
                     min_size=1,
@@ -232,21 +436,25 @@ class ExhaustiveEvaluator:
                 )
             )
 
-        execution_atoms = [LLMExecutionAction(inputs=frozenset(subset)) for subset in execution_subsets]
-        all_atoms = primitive_atoms + execution_atoms
+        nested_atoms = tuple(
+            NestedExecutionAction(
+                nested_inputs=_materialise_inputs(subset),
+                inputs=_materialise_inputs(subset),
+                visibility=ActionVisibility.INTERNAL,
+            )
+            for subset in execution_subsets
+        )
 
-        branch_options: list[FrozenSet[Proposal]] = []
-        for combo in _powerset(all_atoms, min_size=0, max_size=self.option_width):
-            branch_options.append(frozenset(combo))
+        branch_atoms = primitive_atoms + nested_atoms + control_atoms
+        terminal_atoms = primitive_atoms + control_atoms
 
-        terminal_options: list[FrozenSet[Proposal]] = []
-        for combo in _powerset(primitive_atoms, min_size=0, max_size=self.terminal_option_width):
-            terminal_options.append(frozenset(combo))
+        branch_options = _build_option_space(branch_atoms, max_size=self.option_width)
+        terminal_options = _build_option_space(terminal_atoms, max_size=self.terminal_option_width)
 
         if not branch_options:
-            branch_options = [frozenset()]
+            branch_options = (frozenset(),)
         if not terminal_options:
-            terminal_options = [frozenset()]
+            terminal_options = (frozenset(),)
 
         decision_path: list[int] = [0] * self.max_llm_calls
         branches_explored = 0
@@ -259,6 +467,7 @@ class ExhaustiveEvaluator:
 
         while True:
             branches_explored += 1
+            terminal_branches += 1
             current_index = 0
             llm_inputs.clear()
 
@@ -267,11 +476,7 @@ class ExhaustiveEvaluator:
                 llm_inputs.append(inputs)
                 max_depth_reached = max(max_depth_reached, current_index + 1)
 
-                if current_index >= self.max_llm_calls - 1:
-                    options = terminal_options
-                else:
-                    options = branch_options
-
+                options = terminal_options if current_index >= self.max_llm_calls - 1 else branch_options
                 choice = decision_path[current_index]
                 if choice >= len(options):
                     return frozenset()
@@ -282,13 +487,12 @@ class ExhaustiveEvaluator:
             input_artifacts = _materialise_inputs(selected_inputs)
 
             report = self.defence.run(
-                environment=rep.environment,
+                environment=search_environment,
                 initial_inputs=input_artifacts,
                 llm_call=branching_llm_call,
                 declare=tracked_declare,
             )
             final_report = report
-            terminal_branches += 1
 
             if current_index == 0:
                 max_depth_reached = max(max_depth_reached, 1)
@@ -325,9 +529,12 @@ class ExhaustiveEvaluator:
             branches_explored=branches_explored,
             terminal_branches=terminal_branches,
             max_depth_reached=max_depth_reached,
+            branch_option_count=len(branch_options),
+            terminal_option_count=len(terminal_options),
+            used_representative_environment=self.use_representative_environment,
             llm_inputs=llm_inputs.copy(),
             declared=declared.copy(),
-            representative_environment=rep if self.use_representative_environment else None,
+            representative_environment=representative_environment,
         )
 
 
