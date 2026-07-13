@@ -9,8 +9,8 @@ planner/executor split, so execution units should be lightweight and composable.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Generic, TypeVar
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Generic, TypeVar
 
 from fourth_year_project.core.artifacts import Artifact
 from fourth_year_project.core.provenance import Provenance
@@ -36,6 +36,10 @@ class Operation(ABC, Generic[T, U]):
     """
 
     name: str
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("Operation.name must be non-empty")
 
     @abstractmethod
     def run(self, artifact: Artifact[T]) -> Artifact[U]:
@@ -68,9 +72,9 @@ class Operation(ABC, Generic[T, U]):
         """
         return Artifact(
             value=value,
-            provenance=provenance if provenance is not None else artifact.provenance,
-            label=label if label is not None else artifact.label,
-            confidential=confidential if confidential is not None else artifact.confidential,
+            provenance=artifact.provenance if provenance is None else provenance,
+            label=artifact.label if label is None else label,
+            confidential=artifact.confidential if confidential is None else confidential,
         )
 
 
@@ -136,9 +140,50 @@ class RevealOperation(Operation[T, T]):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class MapOperation(Operation[T, U]):
+    """
+    An operation that applies a pure value transform while preserving
+    provenance by default.
+
+    This is useful for lightweight derived artifacts such as summaries,
+    projections, normalisations, or formatting changes.
+    """
+
+    transform: Callable[[T], U] = lambda value: value  # type: ignore[assignment]
+
+    def run(self, artifact: Artifact[T]) -> Artifact[U]:
+        return self.derive(
+            artifact,
+            self.transform(artifact.value),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProvenanceUnionOperation(Operation[T, T]):
+    """
+    An operation that merges the artifact's provenance with an additional
+    provenance object.
+
+    This is useful when an execution step introduces a second authoritative
+    source or a derived trace edge.
+    """
+
+    extra_provenance: Provenance = Provenance.empty()
+
+    def run(self, artifact: Artifact[T]) -> Artifact[T]:
+        return self.derive(
+            artifact,
+            artifact.value,
+            provenance=artifact.provenance.merge(self.extra_provenance),
+        )
+
+
 __all__ = [
     "IdentityOperation",
+    "MapOperation",
     "Operation",
+    "ProvenanceUnionOperation",
     "RedactOperation",
     "RenameOperation",
     "RevealOperation",
