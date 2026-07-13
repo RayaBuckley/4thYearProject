@@ -1,32 +1,48 @@
 """
 ITES: the defence layer.
+
 ITES is the reference defence that takes:
 - an environment,
 - an LLM model, and
 - an initial set of inputs,
+
 and produces security guarantees about what was or was not allowed to happen.
+
 This package intentionally sits at the top level because ITES is the core
 contribution of the project, not just an implementation detail of execution.
 """
+
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Callable, Protocol, FrozenSet, TypeAlias
+from dataclasses import dataclass, field
+from typing import Any, Callable, FrozenSet, Protocol, TypeAlias
+
 from fourth_year_project.core import Artifact
-Proposal: TypeAlias = Any
+from fourth_year_project.core.actions import Proposal
+
 Declare: TypeAlias = Callable[[Any], None]
 LLMCall: TypeAlias = Callable[[FrozenSet[Artifact[Any]]], FrozenSet[Proposal]]
+
+
 class EnvironmentLike(Protocol):
     """
     Minimal interface for an evaluation environment.
+
     A concrete SLED environment will provide the objects, relations and
     metadata that ITES evaluates against.
     """
+
     ...
+
+
 @dataclass(frozen=True, slots=True)
 class Guarantee:
     """
     A statement that ITES claims to enforce or preserve.
+
+    Attributes
+    ----------
     name:
         Short identifier for the guarantee.
     holds:
@@ -34,13 +50,19 @@ class Guarantee:
     details:
         Human-readable explanation suitable for debugging and reporting.
     """
+
     name: str
     holds: bool
     details: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class ITESReport:
     """
     Result of running the defence.
+
+    Attributes
+    ----------
     guarantees:
         The set of guarantees assessed during the run.
     declared_actions:
@@ -48,15 +70,20 @@ class ITESReport:
     blocked_actions:
         Actions that were rejected by the defence.
     """
-    guarantees: FrozenSet[Guarantee] = frozenset()
-    declared_actions: FrozenSet[Any] = frozenset()
-    blocked_actions: FrozenSet[Any] = frozenset()
+
+    guarantees: FrozenSet[Guarantee] = field(default_factory=frozenset)
+    declared_actions: FrozenSet[Any] = field(default_factory=frozenset)
+    blocked_actions: FrozenSet[Any] = field(default_factory=frozenset)
+
+
 class ITES(ABC):
     """
     Base class for ITES defences.
+
     Concrete implementations should evaluate an environment, mediate LLM calls,
     and return a report describing the guarantees achieved.
     """
+
     @abstractmethod
     def run(
         self,
@@ -67,12 +94,20 @@ class ITES(ABC):
     ) -> ITESReport:
         """
         Execute the defence.
+
         Implementations should be deterministic for a fixed environment,
         initial input set and LLM model.
         """
         raise NotImplementedError
+
+
 from .mediator import MediatingITES
-from .reference import ReferenceITES
+
+try:
+    from .reference import ReferenceITES
+except ImportError:  # pragma: no cover
+    ReferenceITES = None  # type: ignore[assignment]
+
 __all__ = [
     "Declare",
     "EnvironmentLike",
