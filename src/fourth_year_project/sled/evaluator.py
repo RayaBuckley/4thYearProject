@@ -20,11 +20,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Callable, FrozenSet, Iterable, Sequence, TypeVar
+from typing import Any, Iterable, Sequence, TypeVar
 
 from fourth_year_project.core import Artifact, Principal
 from fourth_year_project.core.actions import (
-    Action,
     ActionVisibility,
     ClarificationRequestAction,
     DelegationAction,
@@ -45,10 +44,6 @@ from .environment import Data, Environment
 T = TypeVar("T")
 
 
-LLMCall = Callable[[FrozenSet[Artifact[Any]]], FrozenSet[Proposal]]
-Declare = Callable[[Any], None]
-
-
 @dataclass(frozen=True, slots=True)
 class RepresentativeClass:
     """
@@ -61,7 +56,7 @@ class RepresentativeClass:
 
     signature: tuple[frozenset[str], frozenset[str], bool]
     representative: Data
-    members: FrozenSet[Data] = field(default_factory=frozenset)
+    members: frozenset[Data] = field(default_factory=frozenset)
 
     @property
     def size(self) -> int:
@@ -73,7 +68,7 @@ class RepresentativeEnvironment:
     """A compressed environment built from equivalence classes of data."""
 
     environment: Environment
-    classes: FrozenSet[RepresentativeClass] = field(default_factory=frozenset)
+    classes: frozenset[RepresentativeClass] = field(default_factory=frozenset)
     projection: dict[Data, Data] = field(default_factory=dict)
 
     @property
@@ -83,7 +78,7 @@ class RepresentativeEnvironment:
             return 1.0
         return original / max(1, len(self.environment.data))
 
-    def project_inputs(self, inputs: Iterable[Data]) -> FrozenSet[Data]:
+    def project_inputs(self, inputs: Iterable[Data]) -> frozenset[Data]:
         """
         Project original inputs onto the representative environment.
         """
@@ -101,7 +96,7 @@ class ExhaustiveEvaluationResult:
     branch_option_count: int
     terminal_option_count: int
     used_representative_environment: bool
-    llm_inputs: list[FrozenSet[Artifact[Any]]] = field(default_factory=list)
+    llm_inputs: list[frozenset[Artifact[Any]]] = field(default_factory=list)
     declared: list[Any] = field(default_factory=list)
     representative_environment: RepresentativeEnvironment | None = None
 
@@ -111,7 +106,7 @@ def _powerset(
     *,
     min_size: int = 0,
     max_size: int | None = None,
-) -> Iterable[tuple[T, ...]]:
+):
     """Yield subsets of items in increasing size order."""
     n = len(items)
     if max_size is None:
@@ -196,7 +191,7 @@ def _proposal_signature(proposal: Proposal) -> tuple[Any, ...]:
     return ("unknown", repr(proposal))
 
 
-def _materialise_inputs(inputs: Iterable[Data]) -> FrozenSet[Artifact[Any]]:
+def _materialise_inputs(inputs: Iterable[Data]) -> frozenset[Artifact[Any]]:
     """Convert raw SLED inputs into provenance-bearing artifacts."""
     return frozenset(item.to_artifact() for item in inputs)
 
@@ -250,8 +245,8 @@ def compress_environment(environment: Environment) -> RepresentativeEnvironment:
 
 
 def _llm_inputs_readable(
-    inputs: FrozenSet[Data],
-    influencers: FrozenSet[Principal],
+    inputs: frozenset[Artifact[Any]],
+    influencers: frozenset[Principal],
 ) -> bool:
     """
     Exact nested-call readability rule from the previous prototype.
@@ -259,9 +254,12 @@ def _llm_inputs_readable(
     A nested execution request is allowed only when every current influencer
     can read every proposed input.
     """
-    for item in inputs:
+    for artifact in inputs:
+        value = artifact.value
+        if not isinstance(value, Data):
+            continue
         for principal in influencers:
-            if principal not in item.readers:
+            if principal not in value.readers:
                 return False
     return True
 
@@ -270,13 +268,13 @@ def _build_option_space(
     atoms: Sequence[Proposal],
     *,
     max_size: int,
-) -> tuple[FrozenSet[Proposal], ...]:
+) -> tuple[frozenset[Proposal], ...]:
     """
     Build a deterministic, deduplicated option space from a sequence of atoms.
     """
     ordered_atoms = sorted(atoms, key=_proposal_signature)
     seen: set[tuple[Any, ...]] = set()
-    options: list[FrozenSet[Proposal]] = []
+    options: list[frozenset[Proposal]] = []
 
     for combo in _powerset(ordered_atoms, min_size=0, max_size=max_size):
         option = frozenset(combo)
@@ -289,7 +287,7 @@ def _build_option_space(
     return tuple(options)
 
 
-def _build_primitive_atoms(primitive_actions: FrozenSet[str]) -> tuple[PrimitiveAction, ...]:
+def _build_primitive_atoms(primitive_actions: frozenset[str]) -> tuple[PrimitiveAction, ...]:
     """
     Create primitive action atoms from a set of provider operation names.
     """
@@ -372,7 +370,7 @@ class ExhaustiveEvaluator:
     """
 
     defence: ITES
-    primitive_actions: FrozenSet[str]
+    primitive_actions: frozenset[str]
     max_llm_calls: int = 3
     option_width: int = 2
     terminal_option_width: int = 3
@@ -416,9 +414,11 @@ class ExhaustiveEvaluator:
         selected_inputs = frozenset(projection.get(item, item) for item in selected_inputs)
         if not selected_inputs <= search_environment.data:
             missing = selected_inputs - search_environment.data
-            raise ValueError(f"Projected initial inputs are not in the evaluation environment: {missing!r}")
+            raise ValueError(
+                f"Projected initial inputs are not in the evaluation environment: {missing!r}"
+            )
 
-        llm_inputs: list[FrozenSet[Artifact[Any]]] = []
+        llm_inputs: list[frozenset[Artifact[Any]]] = []
         declared: list[Any] = []
 
         primitive_atoms = _build_primitive_atoms(self.primitive_actions)
@@ -471,12 +471,16 @@ class ExhaustiveEvaluator:
             current_index = 0
             llm_inputs.clear()
 
-            def branching_llm_call(inputs: FrozenSet[Artifact[Any]]) -> FrozenSet[Proposal]:
+            def branching_llm_call(inputs: frozenset[Artifact[Any]]) -> frozenset[Proposal]:
                 nonlocal current_index, max_depth_reached
                 llm_inputs.append(inputs)
                 max_depth_reached = max(max_depth_reached, current_index + 1)
 
-                options = terminal_options if current_index >= self.max_llm_calls - 1 else branch_options
+                options = (
+                    terminal_options
+                    if current_index >= self.max_llm_calls - 1
+                    else branch_options
+                )
                 choice = decision_path[current_index]
                 if choice >= len(options):
                     return frozenset()
