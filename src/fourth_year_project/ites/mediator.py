@@ -6,21 +6,42 @@ This module contains the executable heart of ITES.
 The mediator:
 - tracks provenance-derived influence through nested LLM calls,
 - only allows nested execution when the current influencers can read the inputs,
-- allows primitive actions only when the configured primitive authoriser permits them,
+- allows primitive actions only when the exact intersection rule is satisfied,
+- enforces consent only for the current decision principals,
+- respects conversation visibility policy,
 - records every step in an immutable execution trace,
 - returns a structured report of the run.
 
-This is the first place where the defence semantics become explicit state
-transformations rather than a collection of local variables.
+This keeps the original prototype's semantics intact while extending the
+action model to include message emission, consent requests, delegation, and
+other control actions.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, FrozenSet
 
 from fourth_year_project.core import Artifact, Principal, Provenance
+from fourth_year_project.core.actions import (
+    Action,
+    ActionVisibility,
+    ClarificationRequestAction,
+    DelegationAction,
+    MessageUserAction,
+    NestedExecutionAction,
+    NoOpAction,
+    PrimitiveAction,
+    Proposal,
+    RequestConsentAction,
+    StopAction,
+)
+from fourth_year_project.core.chat_policy import ChatPolicy
+from fourth_year_project.core.consent import ConsentProfile, ConsentState
+from fourth_year_project.core.permissions import Permission, normalise_permission
+from fourth_year_project.core.provenance import authors_for
+from fourth_year_project.core.session import Session
 from . import Declare, Guarantee, ITES, ITESReport, LLMCall
 from .state import ExecutionState, ExecutionStep
 
@@ -33,9 +54,8 @@ def _default_primitive_authoriser(action: str, influencers: FrozenSet[Principal]
     """
     Default primitive action policy.
 
-    The current project does not yet have a fully wired action-permission model,
-    so the default is permissive. The hook exists so a later policy layer can be
-    attached without changing the mediator.
+    The exact intersection rule is enforced locally in the mediator, so this
+    hook is only retained for compatibility with older wiring.
     """
     _ = action
     _ = influencers
@@ -77,52 +97,245 @@ def _artifact_principals(inputs: Iterable[Artifact[Any]]) -> FrozenSet[Principal
 def _provenance_for_input(item: Any) -> Provenance:
     """
     Build provenance for a raw SLED input item.
-
-    The provenance is derived from the item's authors, then tagged as an input
-    originating from the SLED environment.
     """
     provenance = Provenance()
 
     for author in getattr(item, "authors", frozenset()):
-        provenance = provenance.merge(Provenance.from_principal(author))
+        provenance = provenance.add_principal(author)
 
-    return provenance.with_operation("sled_input")
+    tag = getattr(item, "tag", None)
+    if tag is not None:
+        provenance = provenance.with_tag(str(tag))
+
+    return provenance.with_tag("sled_input")
 
 
 def _materialise_inputs(inputs: FrozenSet[Any]) -> FrozenSet[Artifact[Any]]:
     """
     Convert raw SLED inputs into provenance-bearing artifacts.
     """
-    return frozenset(
-        Artifact(value=item, provenance=_provenance_for_input(item))
-        for item in inputs
+    materialised: set[Artifact[Any]] = set()
+    for item in inputs:
+        if isinstance(item, Artifact):
+            materialised.add(item)
+        else:
+            materialised.add(Artifact(value=item, provenance=_provenance_for_input(item)))
+    return frozenset(materialised)
+
+
+def _session_from_environment(environment: Any, initial_inputs: FrozenSet[Artifact[Any]]) -> Session:
+    """
+    Resolve the current session from the environment when one is not supplied.
+
+    Fallback behaviour is conservative:
+    - participants are derived from the input provenance,
+    - consent defaults to each participant's own permission set,
+    - chat visibility defaults to private participants-only visibility.
+    """
+    if isinstance(environment, Session):
+        return environment
+
+    existing = getattr(environment, "session", None)
+    if isinstance(existing, Session):
+        return existing
+
+    participants = _artifact_principals(initial_inputs)
+    consent_profiles = frozenset(
+        ConsentProfile(principal=principal, allowed_permissions=frozenset(principal.permissions))
+        for principal in participants
     )
+    return Session(
+        id=str(getattr(environment, "session_id", "auto-session")),
+        participants=participants,
+        chat_policy=ChatPolicy(participants=participants),
+        consent_profiles=consent_profiles,
+    )
+
+
+def _readers_for(item: Any) -> FrozenSet[Principal] | None:
+    """
+    Return the declared readers for a raw input item if present.
+
+    If the item does not expose a readers set, this returns None so the caller
+    can fail closed.
+    """
+    source = item.value if isinstance(item, Artifact) else item
+    readers = getattr(source, "readers", None)
+    if readers is None:
+        return None
+    return frozenset(readers)
+
+
+def _inputs_readable_by_principals(
+    inputs: Iterable[Any],
+    influencers: FrozenSet[Principal],
+) -> bool:
+    """
+    Exact readability check inherited from the prior prototype.
+
+    Every current influencer must be permitted to read every input.
+    """
+    for item in inputs:
+        readers = _readers_for(item)
+        if readers is None:
+            return False
+        if any(principal not in readers for principal in influencers):
+            return False
+    return True
+
+
+def _all_principals_authorised(
+    influencers: FrozenSet[Principal],
+    permission: Permission | str,
+) -> bool:
+    """
+    Exact intersection rule from the original prototype.
+
+    Every principal in the influencer set must have the permission.
+    """
+    perm = normalise_permission(permission)
+    return all(principal.can_perform(perm) for principal in influencers)
+
+
+def _bind_action_context(
+    action: Action[Any],
+    current_inputs: FrozenSet[Artifact[Any]],
+    influencers: FrozenSet[Principal],
+) -> Action[Any]:
+    """
+    Attach the current decision context to an action.
+
+    This ensures the action's decision provenance is the current influencer set
+    and that any missing input set is filled from the current call context.
+    """
+    if isinstance(action, PrimitiveAction):
+        bound_inputs = action.inputs or current_inputs
+        return replace(
+            action,
+            inputs=frozenset(bound_inputs),
+            decision_principals=influencers,
+        )
+
+    if isinstance(action, NestedExecutionAction):
+        nested_inputs = action.nested_inputs or current_inputs
+        nested_inputs = frozenset(nested_inputs)
+        return replace(
+            action,
+            inputs=nested_inputs,
+            nested_inputs=nested_inputs,
+            decision_principals=influencers,
+        )
+
+    if isinstance(action, MessageUserAction):
+        return replace(
+            action,
+            inputs=action.inputs or current_inputs,
+            decision_principals=influencers,
+        )
+
+    if isinstance(action, ClarificationRequestAction):
+        return replace(
+            action,
+            inputs=action.inputs or current_inputs,
+            decision_principals=influencers,
+        )
+
+    if isinstance(action, RequestConsentAction):
+        return replace(
+            action,
+            inputs=action.inputs or current_inputs,
+            decision_principals=influencers,
+        )
+
+    if isinstance(action, DelegationAction):
+        return replace(
+            action,
+            inputs=action.inputs or current_inputs,
+            decision_principals=influencers,
+        )
+
+    if isinstance(action, (StopAction, NoOpAction)):
+        return replace(
+            action,
+            inputs=action.inputs or current_inputs,
+            decision_principals=influencers,
+        )
+
+    return replace(
+        action,
+        inputs=action.inputs or current_inputs,
+        decision_principals=influencers,
+    )
+
+
+def _coerce_legacy_proposal(
+    proposal: Any,
+    current_inputs: FrozenSet[Artifact[Any]],
+    influencers: FrozenSet[Principal],
+) -> Action[Any] | None:
+    """
+    Backwards-compatible conversion for legacy proposal shapes.
+
+    This supports the older `PrimitiveAction(action=...)` and
+    `LLMExecutionAction(inputs=...)` style outputs.
+    """
+    if isinstance(proposal, Action):
+        return proposal
+
+    if hasattr(proposal, "action"):
+        action_name = str(getattr(proposal, "action"))
+        return PrimitiveAction(
+            permission=Permission(action_name),
+            resource=getattr(proposal, "resource", None),
+            provider_operation=action_name,
+            inputs=current_inputs,
+            decision_principals=influencers,
+            visibility=getattr(proposal, "visibility", ActionVisibility.INTERNAL),
+        )
+
+    if hasattr(proposal, "inputs"):
+        nested_inputs = _materialise_inputs(frozenset(getattr(proposal, "inputs")))
+        return NestedExecutionAction(
+            nested_inputs=nested_inputs,
+            inputs=nested_inputs,
+            decision_principals=influencers,
+            visibility=getattr(proposal, "visibility", ActionVisibility.INTERNAL),
+        )
+
+    return None
+
+
+def _primitive_permission_for(action: PrimitiveAction) -> Permission | str:
+    """
+    Derive the permission to check for a primitive action.
+
+    If the provider operation is more specific than the permission label,
+    the explicit permission field wins.
+    """
+    if action.permission and action.permission.name:
+        return action.permission
+    return normalise_permission(action.provider_operation)
+
+
+def _delegation_permissions(action: DelegationAction) -> FrozenSet[Permission]:
+    """
+    Return the permissions that must be authorised for delegation.
+    """
+    if action.delegated_permissions:
+        return frozenset(action.delegated_permissions)
+    return frozenset({Permission("delegate")})
 
 
 @dataclass(frozen=True, slots=True)
 class MediatingITES(ITES):
     """
     Reference mediator for provenance-aware defence execution.
-
-    Parameters
-    ----------
-    max_llm_calls:
-        Maximum number of model invocations permitted along a single branch.
-        The initial call counts as one invocation.
-
-    primitive_authoriser:
-        Hook for checking whether a primitive action is allowed for the current
-        influence set.
-
-    nested_authoriser:
-        Hook for checking whether a nested LLM execution request is allowed.
-        The default rule enforces readability of the requested inputs by all
-        current influencers.
     """
 
     max_llm_calls: int = 3
     primitive_authoriser: PrimitiveAuthoriser = _default_primitive_authoriser
     nested_authoriser: NestedAuthoriser = _default_nested_authoriser
+    session: Session | None = None
 
     def __post_init__(self) -> None:
         if self.max_llm_calls < 1:
@@ -135,6 +348,7 @@ class MediatingITES(ITES):
         llm_call: LLMCall,
         declare: Declare,
     ) -> ITESReport:
+        session = self.session or _session_from_environment(environment, initial_inputs)
         initial_influencers = _artifact_principals(initial_inputs)
         state = ExecutionState(
             environment=environment,
@@ -143,7 +357,8 @@ class MediatingITES(ITES):
             active_influencers=initial_influencers,
         )
 
-        state, nested_inputs_readable, primitive_actions_authorised = self._run_branch(
+        state, nested_inputs_readable, primitive_actions_authorised, visibility_allowed, consent_allowed = self._run_branch(
+            session=session,
             state=state,
             inputs=initial_inputs,
             influencers=initial_influencers,
@@ -177,8 +392,25 @@ class MediatingITES(ITES):
                 name="primitive_actions_authorised",
                 holds=primitive_actions_authorised,
                 details=(
-                    "Every primitive action satisfied the configured "
-                    "primitive authoriser."
+                    "Every primitive action satisfied the exact intersection rule."
+                ),
+            )
+        )
+        state = state.add_guarantee(
+            Guarantee(
+                name="visibility_respected",
+                holds=visibility_allowed,
+                details=(
+                    "Every visible action satisfied the session visibility policy."
+                ),
+            )
+        )
+        state = state.add_guarantee(
+            Guarantee(
+                name="consent_respected",
+                holds=consent_allowed,
+                details=(
+                    "Every consent-sensitive action was approved by the current decision principals."
                 ),
             )
         )
@@ -191,22 +423,25 @@ class MediatingITES(ITES):
 
     def _run_branch(
         self,
+        session: Session,
         state: ExecutionState,
         inputs: FrozenSet[Artifact[Any]],
         influencers: FrozenSet[Principal],
         llm_call: LLMCall,
         declare: Declare,
         depth: int,
-    ) -> tuple[ExecutionState, bool, bool]:
+    ) -> tuple[ExecutionState, bool, bool, bool, bool]:
         """
         Execute one branch of the defence.
 
         Returns the updated state together with:
-        - whether nested execution remained readable, and
-        - whether primitive actions remained authorised.
+        - whether nested execution remained readable,
+        - whether primitive actions remained authorised,
+        - whether visibility remained respected,
+        - whether consent remained respected.
         """
         if not state.can_call_llm():
-            return state, True, True
+            return state, True, True, True, True
 
         state = state.increment_llm_calls()
         proposals = frozenset(llm_call(inputs))
@@ -216,19 +451,70 @@ class MediatingITES(ITES):
 
         nested_inputs_readable = True
         primitive_actions_authorised = True
+        visibility_allowed = True
+        consent_allowed = True
 
-        for proposal in proposals:
-            if hasattr(proposal, "inputs"):
-                raw_inputs = frozenset(getattr(proposal, "inputs"))
+        for raw_proposal in proposals:
+            proposal = _coerce_legacy_proposal(raw_proposal, inputs, influencers)
+            if proposal is None:
+                blocked_this_step.add(raw_proposal)
+                state = state.record_blocked(raw_proposal)
+                continue
 
+            proposal = _bind_action_context(proposal, inputs, influencers)
+
+            if isinstance(proposal, PrimitiveAction):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                permission = _primitive_permission_for(proposal)
+                if not _all_principals_authorised(influencers, permission):
+                    primitive_actions_authorised = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if proposal.decision_principals and proposal.decision_principals != influencers:
+                    consent_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                declare(proposal)
+                declared_this_step.add(proposal)
+                state = state.record_declared(proposal)
+                continue
+
+            if isinstance(proposal, NestedExecutionAction):
                 if depth >= self.max_llm_calls:
                     nested_inputs_readable = False
                     blocked_this_step.add(proposal)
                     state = state.record_blocked(proposal)
                     continue
 
-                if not self.nested_authoriser(state.environment, influencers, raw_inputs):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if not self.nested_authoriser(session, influencers, frozenset(proposal.nested_inputs)):
                     nested_inputs_readable = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if not _inputs_readable_by_principals(proposal.nested_inputs, influencers):
+                    nested_inputs_readable = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if proposal.decision_principals and proposal.decision_principals != influencers:
+                    consent_allowed = False
                     blocked_this_step.add(proposal)
                     state = state.record_blocked(proposal)
                     continue
@@ -237,11 +523,12 @@ class MediatingITES(ITES):
                 declared_this_step.add(proposal)
                 state = state.record_declared(proposal)
 
-                nested_artifacts = _materialise_inputs(raw_inputs)
+                nested_artifacts = _materialise_inputs(frozenset(proposal.nested_inputs))
                 next_influencers = influencers | _artifact_principals(nested_artifacts)
 
                 state = state.with_influencers(next_influencers)
-                state, child_nested_ok, child_primitive_ok = self._run_branch(
+                state, child_nested_ok, child_primitive_ok, child_visibility_ok, child_consent_ok = self._run_branch(
+                    session=session,
                     state=state,
                     inputs=nested_artifacts,
                     influencers=next_influencers,
@@ -251,13 +538,104 @@ class MediatingITES(ITES):
                 )
                 nested_inputs_readable = nested_inputs_readable and child_nested_ok
                 primitive_actions_authorised = primitive_actions_authorised and child_primitive_ok
+                visibility_allowed = visibility_allowed and child_visibility_ok
+                consent_allowed = consent_allowed and child_consent_ok
                 continue
 
-            if hasattr(proposal, "action"):
-                action = getattr(proposal, "action")
+            if isinstance(proposal, MessageUserAction):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
 
-                if not self.primitive_authoriser(action, influencers):
+                if not _inputs_readable_by_principals(proposal.inputs, influencers):
+                    nested_inputs_readable = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if proposal.decision_principals and proposal.decision_principals != influencers:
+                    consent_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                declare(proposal)
+                declared_this_step.add(proposal)
+                state = state.record_declared(proposal)
+                continue
+
+            if isinstance(proposal, ClarificationRequestAction):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if not _inputs_readable_by_principals(proposal.inputs, influencers):
+                    nested_inputs_readable = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                declare(proposal)
+                declared_this_step.add(proposal)
+                state = state.record_declared(proposal)
+                continue
+
+            if isinstance(proposal, RequestConsentAction):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if not _inputs_readable_by_principals(proposal.inputs, influencers):
+                    nested_inputs_readable = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                declare(proposal)
+                declared_this_step.add(proposal)
+                state = state.record_declared(proposal)
+                continue
+
+            if isinstance(proposal, DelegationAction):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if not _inputs_readable_by_principals(proposal.inputs, influencers):
+                    nested_inputs_readable = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                required_permissions = _delegation_permissions(proposal)
+                if any(not _all_principals_authorised(influencers, perm) for perm in required_permissions):
                     primitive_actions_authorised = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                if proposal.decision_principals and proposal.decision_principals != influencers:
+                    consent_allowed = False
+                    blocked_this_step.add(proposal)
+                    state = state.record_blocked(proposal)
+                    continue
+
+                declare(proposal)
+                declared_this_step.add(proposal)
+                state = state.record_declared(proposal)
+                continue
+
+            if isinstance(proposal, (StopAction, NoOpAction)):
+                if not session.chat_policy.permits_visibility(proposal.visibility):
+                    visibility_allowed = False
                     blocked_this_step.add(proposal)
                     state = state.record_blocked(proposal)
                     continue
@@ -282,7 +660,7 @@ class MediatingITES(ITES):
             )
         )
 
-        return state, nested_inputs_readable, primitive_actions_authorised
+        return state, nested_inputs_readable, primitive_actions_authorised, visibility_allowed, consent_allowed
 
 
 __all__ = [
