@@ -19,14 +19,21 @@ from typing import Iterable
 from fourth_year_project.core.actions import (
     Action,
     ActionVisibility,
+    ClarificationRequestAction,
+    DelegationAction,
     MessageUserAction,
     NestedExecutionAction,
+    NoOpAction,
     PrimitiveAction,
     RequestConsentAction,
+    StopAction,
 )
 from fourth_year_project.core.artifacts import Artifact
-from fourth_year_project.core.chat_policy import ChatPolicy
-from fourth_year_project.core.consent import ConsentDecision, ConsentState, consent_from_profiles
+from fourth_year_project.core.consent import (
+    ConsentDecision,
+    ConsentState,
+    consent_from_profiles,
+)
 from fourth_year_project.core.permissions import Permission, normalise_permission
 from fourth_year_project.core.principals import Principal
 from fourth_year_project.core.provenance import Provenance
@@ -56,7 +63,9 @@ def principals_for_provenance(provenance: Provenance) -> frozenset[Principal]:
     return provenance.principals
 
 
-def influencers_for_artifacts(artifacts: Iterable[Artifact[object]]) -> frozenset[Principal]:
+def influencers_for_artifacts(
+    artifacts: Iterable[Artifact[object]],
+) -> frozenset[Principal]:
     """
     Return the union of the principals that influenced a collection of artifacts.
     """
@@ -122,6 +131,54 @@ def consent_allows_action(session: Session, action: Action[object]) -> ConsentDe
     return consent_from_profiles(action, action.decision_principals, profiles)
 
 
+def _action_inputs(action: Action[object]) -> frozenset[Artifact[object]]:
+    """
+    Return the action inputs as a typed artifact set.
+    """
+    return frozenset(action.inputs)
+
+
+def _readability_required(action: Action[object]) -> bool:
+    """
+    Return True if this action must satisfy the "all influencers can read all
+    inputs" rule before it can be emitted.
+
+    Any non-internal action that depends on inputs should not expose content to
+    observers who cannot already read those inputs.
+    """
+    return action.visibility != ActionVisibility.INTERNAL and bool(action.inputs)
+
+
+def _inputs_readable_by_principals(
+    inputs: Iterable[Artifact[object]],
+    principals: Iterable[Principal],
+) -> bool:
+    """
+    Exact readability check inherited from the prior prototype.
+
+    Every principal must be permitted to read every input.
+    """
+    principal_set = frozenset(principals)
+    for artifact in inputs:
+        readers = artifact.provenance.principals
+        if any(principal not in readers for principal in principal_set):
+            return False
+    return True
+
+
+def _effective_influencers(action: Action[object]) -> frozenset[Principal]:
+    """
+    Derive the influencer set for an action.
+
+    For legacy compatibility, this prefers input provenance and falls back to
+    the decision principals if no provenance is attached.
+    """
+    from_inputs = influencers_for_artifacts(action.inputs)
+    if from_inputs:
+        return from_inputs
+    return action.decision_principals
+
+
 def primitive_authorisation(
     session: Session,
     action: PrimitiveAction,
@@ -134,17 +191,27 @@ def primitive_authorisation(
     - the session's consent profiles,
     - and the session's visibility policy.
     """
-    influencers = principals_for_provenance(
-        Provenance.from_principals(action.inputs_principals()) if hasattr(action, "inputs_principals") else Provenance.empty()
-    )
+    influencers = _effective_influencers(action)
+    if action.decision_principals:
+        influencers = influencers | action.decision_principals
 
-    if action.inputs:
-        influencers = influencers | influencers_for_artifacts(action.inputs)
+    if _readability_required(action) and not _inputs_readable_by_principals(action.inputs, influencers):
+        return AuthorisationDecision(
+            allowed=False,
+            reason=(
+                "Blocked because not all influencers can read all inputs for "
+                "this visible primitive action."
+            ),
+            visibility_allowed=chat_visibility_allows(session, action.visibility),
+        )
 
     if not all_principals_authorised(influencers, action.permission):
         return AuthorisationDecision(
             allowed=False,
-            reason="Blocked by the intersection rule: at least one influencer lacks the permission.",
+            reason=(
+                "Blocked by the intersection rule: at least one influencer "
+                "lacks the permission."
+            ),
             visibility_allowed=chat_visibility_allows(session, action.visibility),
         )
 
@@ -165,8 +232,7 @@ def primitive_authorisation(
             consent=consent,
         )
 
-    visibility_allowed = chat_visibility_allows(session, action.visibility)
-    if not visibility_allowed:
+    if not chat_visibility_allows(session, action.visibility):
         return AuthorisationDecision(
             allowed=False,
             reason="Blocked by the session visibility policy.",
@@ -193,7 +259,9 @@ def message_authorisation(
     class and the current influencers are authorised to expose the underlying
     inputs.
     """
-    influencers = influencers_for_artifacts(action.inputs)
+    influencers = _effective_influencers(action)
+    if action.decision_principals:
+        influencers = influencers | action.decision_principals
 
     if not chat_visibility_allows(session, action.visibility):
         return AuthorisationDecision(
@@ -202,7 +270,7 @@ def message_authorisation(
             visibility_allowed=False,
         )
 
-    if action.inputs and not all_principals_authorised(influencers, "read"):
+    if action.inputs and not _inputs_readable_by_principals(action.inputs, influencers):
         return AuthorisationDecision(
             allowed=False,
             reason="Blocked because not all influencers can read all message inputs.",
@@ -238,7 +306,9 @@ def nested_execution_authorisation(
     - the current influencers can read all inputs,
     - and the current decision principals consent.
     """
-    influencers = influencers_for_artifacts(action.inputs)
+    influencers = _effective_influencers(action)
+    if action.decision_principals:
+        influencers = influencers | action.decision_principals
 
     if not chat_visibility_allows(session, action.visibility):
         return AuthorisationDecision(
@@ -247,7 +317,7 @@ def nested_execution_authorisation(
             visibility_allowed=False,
         )
 
-    if action.inputs and not all_principals_authorised(influencers, "read"):
+    if action.inputs and not _inputs_readable_by_principals(action.inputs, influencers):
         return AuthorisationDecision(
             allowed=False,
             reason="Blocked because not all influencers can read all nested inputs.",
@@ -271,6 +341,114 @@ def nested_execution_authorisation(
     )
 
 
+def delegation_authorisation(
+    session: Session,
+    action: DelegationAction,
+) -> AuthorisationDecision:
+    """
+    Evaluate a delegation action.
+
+    Delegation is treated as a high-impact control action. It requires:
+    - session visibility permission,
+    - readability of any attached inputs,
+    - intersection-rule authorisation for the delegated scope,
+    - and consent from the current decision principals.
+    """
+    influencers = _effective_influencers(action)
+    if action.decision_principals:
+        influencers = influencers | action.decision_principals
+
+    if not chat_visibility_allows(session, action.visibility):
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked by the session visibility policy.",
+            visibility_allowed=False,
+        )
+
+    if action.inputs and not _inputs_readable_by_principals(action.inputs, influencers):
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked because not all influencers can read all delegation inputs.",
+            visibility_allowed=True,
+        )
+
+    if action.delegated_permissions:
+        if any(not all_principals_authorised(influencers, permission) for permission in action.delegated_permissions):
+            return AuthorisationDecision(
+                allowed=False,
+                reason="Blocked by the intersection rule for one or more delegated permissions.",
+                visibility_allowed=True,
+            )
+    else:
+        if not all_principals_authorised(influencers, "delegate"):
+            return AuthorisationDecision(
+                allowed=False,
+                reason="Blocked by the intersection rule: delegation permission missing.",
+                visibility_allowed=True,
+            )
+
+    consent = consent_allows_action(session, action)
+    if consent.state != ConsentState.ALLOW:
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked because the current decision principals did not consent.",
+            visibility_allowed=True,
+            consent=consent,
+        )
+
+    return AuthorisationDecision(
+        allowed=True,
+        reason="Delegation is authorised.",
+        visibility_allowed=True,
+        consent=consent,
+    )
+
+
+def clarification_request_authorisation(
+    session: Session,
+    action: ClarificationRequestAction,
+) -> AuthorisationDecision:
+    """
+    Evaluate a clarification request.
+
+    Clarification requests are user-visible and therefore must respect both the
+    visibility policy and input-readability constraints.
+    """
+    influencers = _effective_influencers(action)
+    if action.decision_principals:
+        influencers = influencers | action.decision_principals
+
+    if not chat_visibility_allows(session, action.visibility):
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked by the session visibility policy.",
+            visibility_allowed=False,
+        )
+
+    if action.inputs and not _inputs_readable_by_principals(action.inputs, influencers):
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked because not all influencers can read all clarification inputs.",
+            visibility_allowed=True,
+        )
+
+    consent = consent_allows_action(session, action)
+    if consent.state != ConsentState.ALLOW:
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked because the current decision principals did not consent.",
+            visibility_allowed=True,
+            consent=consent,
+        )
+
+    return AuthorisationDecision(
+        allowed=True,
+        reason="Clarification request is authorised.",
+        visibility_allowed=True,
+        consent=consent,
+    )
+
+
 def request_consent_authorisation(
     session: Session,
     action: RequestConsentAction,
@@ -281,9 +459,11 @@ def request_consent_authorisation(
     This action is always internal or user-visible, but it still cannot reveal
     content that the current influencers are not entitled to expose.
     """
-    influencers = influencers_for_artifacts(action.inputs)
+    influencers = _effective_influencers(action)
+    if action.decision_principals:
+        influencers = influencers | action.decision_principals
 
-    if action.inputs and not all_principals_authorised(influencers, "read"):
+    if action.inputs and not _inputs_readable_by_principals(action.inputs, influencers):
         return AuthorisationDecision(
             allowed=False,
             reason="Blocked because not all influencers can read all request inputs.",
@@ -304,6 +484,48 @@ def request_consent_authorisation(
     )
 
 
+def stop_authorisation(
+    session: Session,
+    action: StopAction,
+) -> AuthorisationDecision:
+    """
+    Evaluate a stop action.
+    """
+    if not chat_visibility_allows(session, action.visibility):
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked by the session visibility policy.",
+            visibility_allowed=False,
+        )
+
+    return AuthorisationDecision(
+        allowed=True,
+        reason="Stop action is authorised.",
+        visibility_allowed=True,
+    )
+
+
+def noop_authorisation(
+    session: Session,
+    action: NoOpAction,
+) -> AuthorisationDecision:
+    """
+    Evaluate a no-op action.
+    """
+    if not chat_visibility_allows(session, action.visibility):
+        return AuthorisationDecision(
+            allowed=False,
+            reason="Blocked by the session visibility policy.",
+            visibility_allowed=False,
+        )
+
+    return AuthorisationDecision(
+        allowed=True,
+        reason="No-op action is authorised.",
+        visibility_allowed=True,
+    )
+
+
 def authorise_action(
     session: Session,
     action: Action[object],
@@ -320,8 +542,20 @@ def authorise_action(
     if isinstance(action, NestedExecutionAction):
         return nested_execution_authorisation(session, action)
 
+    if isinstance(action, DelegationAction):
+        return delegation_authorisation(session, action)
+
+    if isinstance(action, ClarificationRequestAction):
+        return clarification_request_authorisation(session, action)
+
     if isinstance(action, RequestConsentAction):
         return request_consent_authorisation(session, action)
+
+    if isinstance(action, StopAction):
+        return stop_authorisation(session, action)
+
+    if isinstance(action, NoOpAction):
+        return noop_authorisation(session, action)
 
     if not chat_visibility_allows(session, action.visibility):
         return AuthorisationDecision(
@@ -353,12 +587,16 @@ __all__ = [
     "any_principal_authorised",
     "authorise_action",
     "chat_visibility_allows",
+    "clarification_request_authorisation",
     "consent_allows_action",
+    "delegation_authorisation",
     "decision_principals_for_action",
     "influencers_for_artifacts",
     "message_authorisation",
     "nested_execution_authorisation",
+    "noop_authorisation",
     "principals_for_provenance",
     "primitive_authorisation",
     "request_consent_authorisation",
+    "stop_authorisation",
 ]
