@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Iterable, Mapping
 
-from fourth_year_project.core.actions import Action
-from fourth_year_project.ites import Guarantee, ITESReport
+from conflux.core.actions import Action
+from conflux.ites import Guarantee, ITESReport
 
 
 @dataclass(frozen=True, slots=True)

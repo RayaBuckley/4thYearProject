@@ -3,7 +3,7 @@ Tests for information artefacts.
 These tests verify that artefacts remain immutable and that provenance is
 propagated correctly when new derived artefacts are created.
 """
-from fourth_year_project.core import Artifact, Principal, Provenance, Resource
+from conflux.core import Artifact, Principal, Provenance, Resource
 def test_artifact_stores_value_and_provenance():
     alice = Principal("alice", "Alice")
     provenance = Provenance.from_principal(alice)

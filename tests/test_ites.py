@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fourth_year_project.core import Artifact, Principal, Provenance
-from fourth_year_project.ites import Guarantee
-from fourth_year_project.ites.reference import ReferenceITES
-from fourth_year_project.sled.environment import Data
+from conflux.core import Artifact, Principal, Provenance
+from conflux.ites import Guarantee
+from conflux.ites.reference import ReferenceITES
+from conflux.sled.environment import Data
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from fourth_year_project.core.actions import (
+from conflux.core.actions import (
     Action,
     ActionVisibility,
     ClarificationRequestAction,
@@ -28,16 +28,16 @@ from fourth_year_project.core.actions import (
     RequestConsentAction,
     StopAction,
 )
-from fourth_year_project.core.artifacts import Artifact
-from fourth_year_project.core.consent import (
+from conflux.core.artifacts import Artifact
+from conflux.core.consent import (
     ConsentDecision,
     ConsentState,
     consent_from_profiles,
 )
-from fourth_year_project.core.permissions import Permission, normalise_permission
-from fourth_year_project.core.principals import Principal
-from fourth_year_project.core.provenance import Provenance
-from fourth_year_project.core.session import Session
+from conflux.core.permissions import Permission, normalise_permission
+from conflux.core.principals import Principal
+from conflux.core.provenance import Provenance
+from conflux.core.session import Session
 
 
 @dataclass(frozen=True, slots=True)

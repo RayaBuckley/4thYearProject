@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fourth_year_project.core import Artifact, Principal, Provenance
-from fourth_year_project.ites import Guarantee, ITES, ITESReport
-from fourth_year_project.sled import Data, Environment, Scenario, StaticTaskSuite
-from fourth_year_project.sled.benchmark_runner import BenchmarkRunner, run_suite
-from fourth_year_project.sled.task_suite import BenchmarkTask
+from conflux.core import Artifact, Principal, Provenance
+from conflux.ites import Guarantee, ITES, ITESReport
+from conflux.sled import Data, Environment, Scenario, StaticTaskSuite
+from conflux.sled.benchmark_runner import BenchmarkRunner, run_suite
+from conflux.sled.task_suite import BenchmarkTask
 
 
 @dataclass(frozen=True, slots=True)

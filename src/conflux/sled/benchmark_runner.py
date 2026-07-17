@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
 
-from fourth_year_project.ites import ITES
+from conflux.ites import ITES
 from .attack import Attack
 from .evaluator import EvaluationResult, Evaluator
 from .scenario import Scenario

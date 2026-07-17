@@ -15,11 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Protocol, runtime_checkable
 
-from fourth_year_project.ites import ITES
+from conflux.ites import ITES
 
-from fourth_year_project.sled.evaluator import ExhaustiveEvaluator
-from fourth_year_project.sled.environment import Data, Environment
-from fourth_year_project.sled.reporting import EvaluationSummary, summarise_branching
+from conflux.sled.evaluator import ExhaustiveEvaluator
+from conflux.sled.environment import Data, Environment
+from conflux.sled.reporting import EvaluationSummary, summarise_branching
 
 from .native import (
     NativeBenchmarkCase,

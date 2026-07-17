@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import FrozenSet, Iterable
 
-from fourth_year_project.core import Artifact
+from conflux.core import Artifact
 from .attack import Attack, AttackMetadata
 from .environment import Data, Environment
 from .scenario import Scenario
@@ -176,7 +176,7 @@ def _attacker_principal(environment: Environment):
     This is intentionally simple and can be replaced later with a richer attack
     identity model.
     """
-    from fourth_year_project.core import Principal
+    from conflux.core import Principal
 
     return Principal(
         id="benchmark.attacker",

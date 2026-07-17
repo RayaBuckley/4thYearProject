@@ -12,8 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Generic, TypeVar
 
-from fourth_year_project.core.artifacts import Artifact
-from fourth_year_project.core.provenance import Provenance
+from conflux.core.artifacts import Artifact
+from conflux.core.provenance import Provenance
 
 T = TypeVar("T")
 U = TypeVar("U")

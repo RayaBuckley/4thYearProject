@@ -4,8 +4,8 @@ These tests define the security rule that will govern the rest of the system:
 authorisation must be computed from provenance, not from the ambient execution
 context.
 """
-from fourth_year_project.core import Artifact, Principal, Provenance, Resource
-from fourth_year_project.auth import can_access, effective_authority
+from conflux.core import Artifact, Principal, Provenance, Resource
+from conflux.auth import can_access, effective_authority
 def test_effective_authority_includes_all_contributing_principals():
     alice = Principal("alice", "Alice")
     bob = Principal("bob", "Bob")

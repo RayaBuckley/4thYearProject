@@ -17,8 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, FrozenSet, Iterable, Mapping
 
-from fourth_year_project.core import Artifact, Principal, Provenance
-from fourth_year_project.core.actions import (
+from conflux.core import Artifact, Principal, Provenance
+from conflux.core.actions import (
     ActionVisibility,
     ClarificationRequestAction,
     DelegationAction,
@@ -30,7 +30,7 @@ from fourth_year_project.core.actions import (
     RequestConsentAction,
     StopAction,
 )
-from fourth_year_project.core.permissions import Permission, normalise_permission
+from conflux.core.permissions import Permission, normalise_permission
 
 # Backwards-compatible aliases for older imports.
 Proposal = ActionProposal

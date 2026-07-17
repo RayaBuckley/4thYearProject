@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable
 
-from fourth_year_project.core import Principal, Resource
+from conflux.core import Principal, Resource
 from .adapters import PolicyAdapter, PolicyAdapterResult, PolicyContext, request_from_context
 from .base import Policy, PolicyDecision, PolicyRequest
 

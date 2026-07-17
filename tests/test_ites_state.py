@@ -7,9 +7,9 @@ state object used by the mediator.
 
 from __future__ import annotations
 
-from fourth_year_project.core import Artifact, Principal, Provenance
-from fourth_year_project.ites import Guarantee
-from fourth_year_project.ites.state import ExecutionState, ExecutionStep
+from conflux.core import Artifact, Principal, Provenance
+from conflux.ites import Guarantee
+from conflux.ites.state import ExecutionState, ExecutionStep
 
 
 def test_can_call_llm_respects_budget() -> None:

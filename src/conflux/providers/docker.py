@@ -21,10 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from fourth_year_project.core import Principal, Resource
-from fourth_year_project.core.actions import PrimitiveAction, Proposal
-from fourth_year_project.core.permissions import DELETE, READ, WRITE, normalise_permission
-from fourth_year_project.sled.environment import Data, Environment
+from conflux.core import Principal, Resource
+from conflux.core.actions import PrimitiveAction, Proposal
+from conflux.core.permissions import DELETE, READ, WRITE, normalise_permission
+from conflux.sled.environment import Data, Environment
 
 from .base import (
     BaseProviderAdapter,

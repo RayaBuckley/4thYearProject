@@ -8,7 +8,7 @@ Rule:
   contributing principals for that request
 """
 from __future__ import annotations
-from fourth_year_project.core import Principal
+from conflux.core import Principal
 from .base import Policy, PolicyDecision, PolicyRequest
 class OwnerPolicy(Policy):
     """

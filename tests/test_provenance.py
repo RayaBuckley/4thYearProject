@@ -2,7 +2,7 @@
 Tests for provenance tracking.
 These tests verify the core security properties of the provenance model.
 """
-from fourth_year_project.core import (
+from conflux.core import (
     Principal,
     Provenance,
     Resource,

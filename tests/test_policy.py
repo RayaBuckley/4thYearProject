@@ -3,9 +3,9 @@ Tests for the policy layer.
 These tests lock in the first concrete policy rule: access is granted only when
 the resource owner is among the contributing principals.
 """
-from fourth_year_project.core import Principal, Resource
-from fourth_year_project.policy import PolicyRequest
-from fourth_year_project.policy.owner_policy import OwnerPolicy
+from conflux.core import Principal, Resource
+from conflux.policy import PolicyRequest
+from conflux.policy.owner_policy import OwnerPolicy
 def test_owner_policy_allows_when_owner_is_present():
     alice = Principal("alice", "Alice")
     resource = Resource("doc-1", alice)

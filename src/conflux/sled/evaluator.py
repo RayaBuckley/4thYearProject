@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Callable, Iterable, Sequence, TypeVar
 
-from fourth_year_project.core import Artifact, Principal
-from fourth_year_project.core.actions import (
+from conflux.core import Artifact, Principal
+from conflux.core.actions import (
     ActionVisibility,
     ClarificationRequestAction,
     DelegationAction,
@@ -35,8 +35,8 @@ from fourth_year_project.core.actions import (
     RequestConsentAction,
     StopAction,
 )
-from fourth_year_project.core.permissions import normalise_permission
-from fourth_year_project.ites import Declare, Guarantee, ITES, ITESReport, LLMCall
+from conflux.core.permissions import normalise_permission
+from conflux.ites import Declare, Guarantee, ITES, ITESReport, LLMCall
 
 from .environment import Data, Environment
 

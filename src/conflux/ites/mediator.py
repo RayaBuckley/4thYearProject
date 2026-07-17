@@ -23,9 +23,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Callable, FrozenSet
 
-from fourth_year_project.auth.authorisation import AuthorisationDecision, authorise_action
-from fourth_year_project.core import Artifact, Principal, Provenance
-from fourth_year_project.core.actions import (
+from conflux.auth.authorisation import AuthorisationDecision, authorise_action
+from conflux.core import Artifact, Principal, Provenance
+from conflux.core.actions import (
     Action,
     ActionVisibility,
     ClarificationRequestAction,
@@ -38,10 +38,10 @@ from fourth_year_project.core.actions import (
     RequestConsentAction,
     StopAction,
 )
-from fourth_year_project.core.chat_policy import ChatPolicy
-from fourth_year_project.core.consent import ConsentProfile
-from fourth_year_project.core.permissions import Permission, normalise_permission
-from fourth_year_project.core.session import Session
+from conflux.core.chat_policy import ChatPolicy
+from conflux.core.consent import ConsentProfile
+from conflux.core.permissions import Permission, normalise_permission
+from conflux.core.session import Session
 from . import Declare, Guarantee, ITES, ITESReport, LLMCall
 from .state import ExecutionState, ExecutionStep
 

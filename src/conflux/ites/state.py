@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, FrozenSet, Tuple
 
-from fourth_year_project.core import Artifact, Principal, Session
-from fourth_year_project.core.actions import Action
+from conflux.core import Artifact, Principal, Session
+from conflux.core.actions import Action
 from . import Guarantee
 
 

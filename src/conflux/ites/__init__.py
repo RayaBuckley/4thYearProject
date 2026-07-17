@@ -18,8 +18,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, FrozenSet, Protocol, TypeAlias
 
-from fourth_year_project.core import Artifact
-from fourth_year_project.core.actions import Proposal
+from conflux.core import Artifact
+from conflux.core.actions import Proposal
 
 Declare: TypeAlias = Callable[[Any], None]
 LLMCall: TypeAlias = Callable[[FrozenSet[Artifact[Any]]], FrozenSet[Proposal]]

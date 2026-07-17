@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import FrozenSet
-from fourth_year_project.core import Principal, Resource
+from conflux.core import Principal, Resource
 @dataclass(frozen=True, slots=True)
 class PolicyRequest:
     """

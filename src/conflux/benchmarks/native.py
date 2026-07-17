@@ -18,11 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from fourth_year_project.core import Artifact
-from fourth_year_project.ites import ITES, ITESReport
-from fourth_year_project.sled.evaluator import ExhaustiveEvaluator, ExhaustiveEvaluationResult
-from fourth_year_project.sled.environment import Data, Environment
-from fourth_year_project.sled.reporting import BranchingSummary, EvaluationSummary, summarise_branching
+from conflux.core import Artifact
+from conflux.ites import ITES, ITESReport
+from conflux.sled.evaluator import ExhaustiveEvaluator, ExhaustiveEvaluationResult
+from conflux.sled.environment import Data, Environment
+from conflux.sled.reporting import BranchingSummary, EvaluationSummary, summarise_branching
 
 from .results import (
     BenchmarkCaseResult,
