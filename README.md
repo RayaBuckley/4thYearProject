@@ -1,4 +1,8 @@
-# ITES: Influence Tracking Execution Security
+# Conflux: Principal Context Is All You Need for Secure AI Agents
+
+This is the repo for my master's project. It extends my prior work on ITES and SLED under one system: Conflux.
+
+# ITES
 
 ITES is a provenance-aware defence architecture for agentic LLM systems. It enforces authorisation based on the principals that actually influenced an action, rather than relying solely on the identity of the requesting user or the permissions of the executing agent.
 
