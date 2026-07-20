@@ -1,394 +1,94 @@
-# Conflux: Principal Context Is All You Need for Secure AI Agents
+# Conflux
 
-This is the repo for my master's project. It extends my prior work on ITES and SLED under one system: Conflux.
+Conflux is a research framework for principal-aware security in AI agents. It
+implements and evaluates the hypothesis that an agent should be modelled as
+being influenced by multiple principals, with permissions determined by its
+current **Principal Context** rather than by static prompt trust labels.
 
-# ITES
+## Research system
 
-ITES is a provenance-aware defence architecture for agentic LLM systems. It enforces authorisation based on the principals that actually influenced an action, rather than relying solely on the identity of the requesting user or the permissions of the executing agent.
+Conflux has two complementary contributions:
 
-The project has two major components:
+- **ITES** is the provenance-aware defence architecture. It mediates proposed
+  actions, preserves provenance through execution, derives the Principal
+  Context, and applies authorisation, visibility, and consent checks.
+- **SLED** is the evaluation framework. It constructs environments and
+  scenarios, generates attacks, executes benchmark tasks, records traces, and
+  reports security and utility outcomes.
 
-- **ITES**, the defence architecture that mediates LLM execution.
-- **SLED** (Security, Logic and Evaluation Dataset), an exhaustive evaluation framework for reasoning about the security and utility of agentic systems.
+The security model treats prompt injection as an influence attack. Information
+from prompts, documents, tools, and generated artefacts retains provenance as
+it flows through recursive execution. A primitive action is permitted only
+when the relevant principals in its Principal Context are collectively
+authorised for that action.
 
-The long-term goal is to evaluate realistic agentic systems against prompt injection and influence attacks while maintaining as much legitimate utility as possible.
+## Architecture
 
----
-
-# Motivation
-
-Modern LLM agents execute actions on behalf of users.
-
-Current systems generally authorise actions using one of:
-
-- the permissions of the executing service,
-- the permissions of the requesting user,
-- heuristic prompt filtering.
-
-These approaches fail to account for **who actually influenced the decision**.
-
-Prompt injection is fundamentally an influence attack.
-
-ITES models influence explicitly and derives authority from information provenance.
-
----
-
-# Core idea
-
-Every piece of information has provenance.
-
-When information influences an action:
-
-```
-information
-        │
-        ▼
-provenance
-        │
-        ▼
-current influencers
-        │
-        ▼
-intersection rule
-        │
-        ▼
-authorised action
+```text
+core domain model
+        ↓
+execution and provenance-preserving operations
+        ↓
+authorisation and policy adapters
+        ↓
+ITES mediation
+        ↓
+providers and benchmark integrations
+        ↓
+SLED evaluation, traces, metrics, and reports
 ```
 
-The defence maintains the set of current influencers throughout recursive LLM execution.
+The core defence is independent of a particular model, agent framework,
+provider, or benchmark. Adapters materialise realistic environments and
+translate external traces without changing the security model.
 
-A primitive action is authorised only when **every current influencer is authorised** to perform that action.
+## Repository structure
 
-This preserves the security properties of the original prototype while allowing recursive execution.
-
----
-
-# Architecture
-
-The project is divided into several layers.
-
-```
-core
-│
-├── principals
-├── permissions
-├── resources
-├── provenance
-├── artifacts
-├── actions
-├── consent
-├── chat_policy
-└── session
-
-↓
-
-execution
-
-↓
-
-auth
-
-↓
-
-ITES
-
-↓
-
-SLED
-
-↓
-
-provider adapters
-
-↓
-
-benchmarks
+```text
+src/conflux/core/          Immutable domain objects and action taxonomy
+src/conflux/execution/     Provenance-preserving operations
+src/conflux/auth/          Principal-aware authorisation functions
+src/conflux/policy/        Policy interfaces and policy-provider adapters
+src/conflux/ites/          ITES interfaces, mediation, and execution state
+src/conflux/providers/     Filesystem and Docker environment adapters
+src/conflux/sled/          Synthetic evaluation framework and defences
+src/conflux/benchmarks/    Native and external benchmark integrations
+tests/                     Unit and integration-oriented tests
+docs/                      Architecture, terminology, and development guides
+paper/                     Tracked LaTeX source, diagrams, and final PDF
 ```
 
----
-
-# Core model
-
-The core package defines immutable domain objects.
-
-## Principals
-
-Represent users, services, agents and other security principals.
-
-Principals carry their authorised permissions.
-
----
-
-## Resources
-
-Protected objects that primitive actions operate on.
-
-Examples include
-
-- files
-- databases
-- cloud resources
-- APIs
-
----
-
-## Artifacts
-
-Artifacts are provenance-bearing pieces of information.
-
-Examples include
-
-- user prompts
-- retrieved documents
-- tool outputs
-- generated summaries
-
-Artifacts are the fundamental information-flow objects of ITES.
-
----
-
-## Provenance
-
-Information provenance records
-
-- which principals contributed information,
-- source labels,
-- provenance tags.
-
-Decision provenance is deliberately **not** stored here.
-
----
-
-## Actions
-
-The defence reasons about actions rather than raw strings.
-
-Current action taxonomy:
-
-- PrimitiveAction
-- NestedExecutionAction
-- DelegationAction
-- MessageUserAction
-- ClarificationRequestAction
-- RequestConsentAction
-- StopAction
-- NoOpAction
-
----
-
-# ITES
-
-ITES mediates every proposed action.
-
-The mediator:
-
-- tracks provenance-derived influence,
-- propagates influence through recursive execution,
-- enforces the exact intersection rule,
-- applies visibility policy,
-- applies consent policy,
-- records an immutable execution trace.
-
-The defence intentionally contains no planner/executor split.
-
-Nested execution is modelled directly.
-
----
-
-# Authorisation
-
-ITES separates three independent concepts.
-
-## Authorisation
-
-Can the current influencers perform the action?
-
-Uses the exact intersection rule:
-
-> every current influencer must authorise the action.
-
----
-
-## Visibility
-
-Can this action be observed?
-
-Conversation visibility is controlled independently of authorisation.
-
-Visibility policies include:
-
-- internal
-- user-visible
-- transcript-visible
-- audited
-- provider-visible
-
----
-
-## Consent
-
-Consent is intentionally narrower than authorisation.
-
-Users may voluntarily expose only a subset of their permissions for automatic execution.
-
-Consent:
-
-- is attached to decision principals,
-- never broadens authority,
-- cannot be manufactured by involving unrelated users.
-
----
-
-# Sessions
-
-A Session represents an execution context.
-
-It binds together:
-
-- participants,
-- conversation visibility,
-- consent profiles.
-
-Execution state is intentionally separate.
-
----
-
-# SLED
-
-SLED is the evaluation framework.
-
-It models:
-
-- environment data,
-- authors,
-- readers,
-- recursive execution,
-- benchmark environments.
-
-The goal is exhaustive evaluation of security and utility.
-
----
-
-# Planned evaluation
-
-The intended evaluator explores every reachable execution branch.
-
-```
-Environment
-
-↓
-
-Representative Environment
-
-↓
-
-Exhaustive Search
-
-↓
-
-Security / Utility Metrics
+## Design commitments
+
+- Provenance is never silently discarded.
+- Security decisions use the Principal Context, not static trust labels.
+- Authorisation, visibility, and consent remain distinct decisions.
+- Domain models are explicit, immutable where practical, and benchmark
+  independent.
+- Providers, policies, runtimes, and benchmarks are replaceable adapters.
+- Evaluation measures both defence and legitimate utility.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Glossary](docs/GLOSSARY.md)
+- [Module guide](docs/MODULE_GUIDE.md)
+- [Testing](docs/TESTING.md)
+- [Reproducibility](docs/REPRODUCIBILITY.md)
+- [AI development guide](docs/AI_DEVELOPMENT_GUIDE.md)
+- [Implementation status](docs/IMPLEMENTATION_STATUS.md)
+
+## Development
+
+The project targets Python 3.12 or newer. Install the development extras and
+run the test suite with:
+
+```text
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
-Planned optimisations include:
-
-- representative-environment reduction
-- branch memoisation
-- action canonicalisation
-- branch pruning
-- symbolic state compression
-
----
-
-# Provider adapters
-
-The core defence is provider-independent.
-
-Real systems will be integrated using adapters.
-
-Planned adapters include:
-
-- Docker
-- Virtual Machines
-- Filesystems
-- Databases
-- AWS IAM
-- Google Cloud IAM
-- Microsoft Entra PIM
-
-These adapters will materialise realistic organisational environments without changing the defence.
-
----
-
-# Benchmarks
-
-Planned benchmark integrations include:
-
-- native exhaustive SLED evaluation
-- AgentDojo
-- additional external agent benchmarks
-- comparisons across multiple frontier LLMs
-
----
-
-# Current implementation status
-
-Implemented:
-
-- immutable core model
-- provenance tracking
-- action taxonomy
-- consent model
-- conversation visibility
-- session model
-- intersection-rule authorisation
-- ITES mediation framework
-- execution trace
-- environment model
-
-Partially implemented:
-
-- exhaustive evaluator
-- representative environments
-
-Planned:
-
-- benchmark runners
-- provider adapters
-- Docker / VM simulation
-- cloud policy adapters
-- benchmark reporting
-- organisational simulation
-
----
-
-# Repository structure
-
-```
-src/
-    fourth_year_project/
-        core/
-        execution/
-        auth/
-        ites/
-        sled/
-
-tests/
-
-scripts/        (planned)
-
-benchmarks/     (planned)
-
-providers/      (planned)
-```
-
----
-
-# Research direction
-
-The project aims to answer:
-
-> Can provenance-based authorisation provide practical protection against prompt injection while preserving legitimate utility?
-
-Unlike traditional prompt-injection defences, ITES reasons about **authority**, **influence**, **visibility**, and **consent** simultaneously.
-
-The long-term objective is to demonstrate these guarantees on realistic organisational environments and existing agent security benchmarks.
+See [Reproducibility](docs/REPRODUCIBILITY.md) for experiment and paper
+instructions. Detailed interface contracts are maintained as the architecture
+is refined; the current public extension points are described in the module
+guide.

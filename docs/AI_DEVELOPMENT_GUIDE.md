@@ -1,6 +1,6 @@
-# AI Development Guide
+# Conflux AI Development Guide
 
-> Canonical instructions for AI-assisted development of the Fourth Year Project.
+> Canonical instructions for AI-assisted development of Conflux.
 >
 > This document defines the project's development workflow, architectural principles,
 > implementation strategy, and expectations for AI-generated code.
@@ -317,7 +317,7 @@ Always provide the full relative path.
 
 Example:
 
-src/fourth_year_project/policy/base.py
+src/conflux/policy/base.py
 
 Generate complete file contents.
 

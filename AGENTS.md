@@ -119,7 +119,7 @@ Principal Context
 
 not:
 
-Current influence set
+Principal Context
 
 Always use:
 
